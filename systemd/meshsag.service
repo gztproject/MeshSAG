@@ -1,0 +1,18 @@
+[Unit]
+Description=MeshSAG POCSAG forwarder
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=meshsag
+Group=meshsag
+WorkingDirectory=/opt/meshsag
+Environment=CONFIG_PATH=/etc/meshsag/config.yaml
+ExecStart=/opt/meshsag/.venv/bin/python /opt/meshsag/pocsag_forwarder.py
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

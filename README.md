@@ -97,3 +97,25 @@ Set `MQTT_TLS=true` and provide:
 - `MQTT_CA_CERT`
 - `MQTT_CLIENT_CERT`
 - `MQTT_CLIENT_KEY`
+
+## Systemd service
+Recommended for servers. This repo includes a unit file at `systemd/meshsag.service`.
+
+1. Create a service user:
+   - `sudo useradd --system --no-create-home --shell /usr/sbin/nologin meshsag`
+2. Install the repo and deps:
+   - `sudo mkdir -p /opt/meshsag`
+   - `sudo rsync -a ./ /opt/meshsag/`
+   - `sudo python3 -m venv /opt/meshsag/.venv`
+   - `sudo /opt/meshsag/.venv/bin/pip install -r /opt/meshsag/requirements.txt`
+3. Place config:
+   - `sudo mkdir -p /etc/meshsag`
+   - `sudo cp /opt/meshsag/config.example.yaml /etc/meshsag/config.yaml`
+   - `sudo chown -R meshsag:meshsag /etc/meshsag`
+   - `sudo chmod 600 /etc/meshsag/config.yaml`
+4. Install and enable the service:
+   - `sudo cp /opt/meshsag/systemd/meshsag.service /etc/systemd/system/meshsag.service`
+   - `sudo systemctl daemon-reload`
+   - `sudo systemctl enable --now meshsag`
+5. Logs:
+   - `journalctl -u meshsag -f`
