@@ -198,6 +198,26 @@ class RoutingConfig:
                 return ("channel", entry["channel"])
         return None
 
+    def route_all(self, ric_key: str, ric_int: Optional[int]) -> List[Tuple[str, Any]]:
+        results: List[Tuple[str, Any]] = []
+        seen = set()
+
+        if ric_key in self.ric_to_user:
+            dest = self.ric_to_user[ric_key]
+            key = ("user", dest)
+            results.append(key)
+            seen.add(key)
+
+        for entry in self.channel_filters:
+            if _ric_matches(ric_int, entry["singles"], entry["ranges"]):
+                dest = entry["channel"]
+                key = ("channel", dest)
+                if key not in seen:
+                    results.append(key)
+                    seen.add(key)
+
+        return results
+
 
 class MeshMonitorSender:
     def __init__(self, cfg: Optional[Dict[str, Any]] = None) -> None:
@@ -289,10 +309,9 @@ class Forwarder:
         if not ric_key:
             return
 
-        route = self.routing.route(ric_key, ric_int)
-        if not route:
+        routes = self.routing.route_all(ric_key, ric_int)
+        if not routes:
             return
-        kind, dest = route
 
         text = str(message)
         parts = []
@@ -310,8 +329,12 @@ class Forwarder:
         if self.max_len > 0 and len(text) > self.max_len:
             text = text[: self.max_len]
 
-        self.sender.send(kind, dest, text, ric_key, timestamp)
-        logging.info("Forwarded RIC %s to %s=%s", ric_key, kind, dest)
+        for kind, dest in routes:
+            try:
+                self.sender.send(kind, dest, text, ric_key, timestamp)
+                logging.info("Forwarded RIC %s to %s=%s", ric_key, kind, dest)
+            except Exception as exc:  # noqa: BLE001
+                logging.exception("Failed to send RIC %s to %s=%s: %s", ric_key, kind, dest, exc)
 
 
 def _setup_logging(runtime_cfg: Optional[Dict[str, Any]] = None) -> None:

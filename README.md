@@ -7,6 +7,7 @@ Listens to POCSAG JSON messages on MQTT and forwards matched RICs to MeshMonitor
 - Routes by RIC:
   - `ric_to_user`: exact RIC -> short name (direct message)
   - `channel_filters`: list of RICs or ranges -> channel
+  - A single RIC can match multiple entries; the message is sent to all matches.
 
 MeshMonitor v2 provides an API with token auth and Swagger docs at `/api/v1/docs` on your instance. The release notes also mention a `POST /api/v1/messages` endpoint for programmatic sends.
 
