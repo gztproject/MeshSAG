@@ -31,6 +31,19 @@ runtime:
   queue_max: 1000
   max_message_len: 0
 
+dedupe:
+  enabled: false
+  window_seconds: 60
+  backend: memory
+  key_prefix: pocsag
+  # For Redis:
+  redis_url: ""
+  redis_host: localhost
+  redis_port: 6379
+  redis_db: 0
+  redis_password: ""
+  redis_tls: false
+
 channel_filters:
   - channel: 0
     rics:

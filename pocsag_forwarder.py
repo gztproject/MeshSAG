@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import hashlib
 import json
 import logging
 import os
@@ -219,6 +220,81 @@ class RoutingConfig:
         return results
 
 
+class DedupeCache:
+    def __init__(self, cfg: Dict[str, Any]) -> None:
+        self.enabled = _get_bool("DEDUPE_ENABLED", cfg, "enabled", False)
+        self.window_seconds = _get_int("DEDUPE_WINDOW_SECONDS", cfg, "window_seconds", 0)
+        self.backend = (_get_str("DEDUPE_BACKEND", cfg, "backend", "memory") or "memory").lower()
+        self.key_prefix = _get_str("DEDUPE_KEY_PREFIX", cfg, "key_prefix", "pocsag") or "pocsag"
+
+        self._memory: Dict[str, float] = {}
+        self._cleanup_every = 250
+        self._ops = 0
+        self._redis = None
+
+        if self.enabled and self.window_seconds > 0 and self.backend == "redis":
+            self._init_redis(cfg)
+
+    def _init_redis(self, cfg: Dict[str, Any]) -> None:
+        try:
+            import redis  # type: ignore
+        except Exception as exc:  # noqa: BLE001
+            logging.warning("Redis backend requested but redis module missing: %s", exc)
+            self.backend = "memory"
+            return
+
+        url = _get_str("REDIS_URL", cfg, "redis_url", None)
+        if url:
+            self._redis = redis.Redis.from_url(url)
+            return
+
+        host = _get_str("REDIS_HOST", cfg, "redis_host", "localhost")
+        port = _get_int("REDIS_PORT", cfg, "redis_port", 6379)
+        db = _get_int("REDIS_DB", cfg, "redis_db", 0)
+        password = _get_str("REDIS_PASSWORD", cfg, "redis_password", None)
+        tls = _get_bool("REDIS_TLS", cfg, "redis_tls", False)
+        scheme = "rediss" if tls else "redis"
+        url = f"{scheme}://{host}:{port}/{db}"
+        self._redis = redis.Redis.from_url(url, password=password)
+
+    def _redis_allow(self, key: str) -> Optional[bool]:
+        if self._redis is None:
+            return None
+        try:
+            redis_key = f"{self.key_prefix}:{key}"
+            return bool(self._redis.set(redis_key, "1", nx=True, ex=self.window_seconds))
+        except Exception as exc:  # noqa: BLE001
+            logging.warning("Redis dedupe failed, falling back to memory: %s", exc)
+            self._redis = None
+            self.backend = "memory"
+            return None
+
+    def _memory_allow(self, key: str) -> bool:
+        now = time.time()
+        self._ops += 1
+        if self._ops % self._cleanup_every == 0:
+            self._cleanup(now)
+        expires_at = self._memory.get(key)
+        if expires_at and expires_at > now:
+            return False
+        self._memory[key] = now + self.window_seconds
+        return True
+
+    def _cleanup(self, now: float) -> None:
+        expired = [k for k, v in self._memory.items() if v <= now]
+        for k in expired:
+            self._memory.pop(k, None)
+
+    def allow(self, key: str) -> bool:
+        if not self.enabled or self.window_seconds <= 0:
+            return True
+        if self.backend == "redis":
+            allowed = self._redis_allow(key)
+            if allowed is not None:
+                return allowed
+        return self._memory_allow(key)
+
+
 class MeshMonitorSender:
     def __init__(self, cfg: Optional[Dict[str, Any]] = None) -> None:
         self.base_url = _get_str("MESHMONITOR_BASE_URL", cfg, "base_url", "http://localhost:8080").rstrip("/")
@@ -259,6 +335,7 @@ class Forwarder:
         sender: MeshMonitorSender,
         runtime_cfg: Optional[Dict[str, Any]] = None,
         message_cfg: Optional[Dict[str, Any]] = None,
+        dedupe_cfg: Optional[Dict[str, Any]] = None,
     ) -> None:
         self.routing = routing
         self.sender = sender
@@ -272,6 +349,8 @@ class Forwarder:
         self.message_suffix = _get_str("MM_MESSAGE_SUFFIX", message_cfg, "message_suffix", "") or ""
         self.include_ric = _get_bool("MM_INCLUDE_RIC", message_cfg, "include_ric", False)
         self.include_timestamp = _get_bool("MM_INCLUDE_TIMESTAMP", message_cfg, "include_timestamp", False)
+
+        self.dedupe = DedupeCache(dedupe_cfg or {})
 
     def start(self) -> None:
         self.worker.start()
@@ -330,11 +409,19 @@ class Forwarder:
             text = text[: self.max_len]
 
         for kind, dest in routes:
+            if not self.dedupe.allow(self._dedupe_key(kind, dest, ric_key, text)):
+                logging.debug("Duplicate suppressed for RIC %s to %s=%s", ric_key, kind, dest)
+                continue
             try:
                 self.sender.send(kind, dest, text, ric_key, timestamp)
                 logging.info("Forwarded RIC %s to %s=%s", ric_key, kind, dest)
             except Exception as exc:  # noqa: BLE001
                 logging.exception("Failed to send RIC %s to %s=%s: %s", ric_key, kind, dest, exc)
+
+    @staticmethod
+    def _dedupe_key(kind: str, dest: Any, ric_key: str, text: str) -> str:
+        raw = f"{kind}|{dest}|{ric_key}|{text}"
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 def _setup_logging(runtime_cfg: Optional[Dict[str, Any]] = None) -> None:
@@ -356,11 +443,12 @@ def main() -> None:
     runtime_cfg = config_data.get("runtime", {})
     mqtt_cfg = config_data.get("mqtt", {})
     mesh_cfg = config_data.get("meshmonitor", {})
+    dedupe_cfg = config_data.get("dedupe", {})
 
     _setup_logging(runtime_cfg)
     routing = RoutingConfig.from_dict(config_data)
     sender = MeshMonitorSender(mesh_cfg)
-    forwarder = Forwarder(routing, sender, runtime_cfg, mesh_cfg)
+    forwarder = Forwarder(routing, sender, runtime_cfg, mesh_cfg, dedupe_cfg)
     forwarder.start()
 
     mqtt_host = _get_str("MQTT_HOST", mqtt_cfg, "host", "localhost")

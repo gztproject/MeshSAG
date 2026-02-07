@@ -40,6 +40,11 @@ MeshMonitor v2 provides an API with token auth and Swagger docs at `/api/v1/docs
 
    runtime:
      log_level: INFO
+ 
+   dedupe:
+     enabled: true
+     window_seconds: 60
+     backend: memory
    ```
    - Optional env overrides:
    - `CONFIG_PATH` (default `config.yaml`)
@@ -51,6 +56,8 @@ MeshMonitor v2 provides an API with token auth and Swagger docs at `/api/v1/docs
    - `MM_MESSAGE_FIELD`, `MM_CHANNEL_FIELD`, `MM_USER_FIELD`
    - `MM_MESSAGE_PREFIX`, `MM_MESSAGE_SUFFIX`
    - `MM_EXTRA_JSON`, `MM_INCLUDE_RIC`, `MM_INCLUDE_TIMESTAMP`
+   - `DEDUPE_ENABLED`, `DEDUPE_WINDOW_SECONDS`, `DEDUPE_BACKEND`, `DEDUPE_KEY_PREFIX`
+   - `REDIS_URL` or `REDIS_HOST`, `REDIS_PORT`, `REDIS_DB`, `REDIS_PASSWORD`, `REDIS_TLS`
    - `QUEUE_MAX`, `MAX_MESSAGE_LEN`, `LOG_LEVEL`
 4. Run:
    - `python pocsag_forwarder.py`
@@ -69,6 +76,9 @@ If your MeshMonitor API expects different field names or extra params, adjust vi
 - `MM_INCLUDE_RIC`, `MM_INCLUDE_TIMESTAMP` (append `[RIC ...]` / `[TS ...]` to message text)
 
 Note: Verify the actual payload shape for your MeshMonitor version using the Swagger UI on your server.
+
+## Deduplication
+If enabled, the forwarder suppresses duplicate sends to the same destination when the same message text appears within the configured window. Keys are derived from `kind + destination + RIC + message text`. Backend can be `memory` or `redis` (optional).
 
 ## Example routing config
 ```yaml
