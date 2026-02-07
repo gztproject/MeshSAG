@@ -1,0 +1,401 @@
+#!/usr/bin/env python3
+import json
+import logging
+import os
+import queue
+import signal
+import threading
+import time
+from typing import Any, Dict, List, Optional, Tuple
+
+import requests
+import yaml
+from paho.mqtt import client as mqtt
+
+
+def _to_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    raw = str(value).strip().lower()
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
+def _cfg_get(cfg: Optional[Dict[str, Any]], key: str, default: Any = None) -> Any:
+    if isinstance(cfg, dict) and key in cfg and cfg[key] is not None:
+        return cfg[key]
+    return default
+
+
+def _get_str(env_name: str, cfg: Optional[Dict[str, Any]], key: str, default: Optional[str]) -> Optional[str]:
+    env_val = os.getenv(env_name)
+    if env_val is not None:
+        return env_val
+    val = _cfg_get(cfg, key, default)
+    if val is None:
+        return default
+    return str(val)
+
+
+def _get_int(env_name: str, cfg: Optional[Dict[str, Any]], key: str, default: int) -> int:
+    env_val = os.getenv(env_name)
+    if env_val is not None:
+        try:
+            return int(env_val)
+        except ValueError:
+            return default
+    val = _cfg_get(cfg, key, default)
+    try:
+        return int(val)
+    except (TypeError, ValueError):
+        return default
+
+
+def _get_float(env_name: str, cfg: Optional[Dict[str, Any]], key: str, default: float) -> float:
+    env_val = os.getenv(env_name)
+    if env_val is not None:
+        try:
+            return float(env_val)
+        except ValueError:
+            return default
+    val = _cfg_get(cfg, key, default)
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return default
+
+
+def _get_bool(env_name: str, cfg: Optional[Dict[str, Any]], key: str, default: bool) -> bool:
+    env_val = os.getenv(env_name)
+    if env_val is not None:
+        return _to_bool(env_val, default)
+    return _to_bool(_cfg_get(cfg, key, default), default)
+
+
+def _get_json(env_name: str, cfg: Optional[Dict[str, Any]], key: str, default: Dict[str, Any]) -> Dict[str, Any]:
+    env_val = os.getenv(env_name)
+    if env_val is not None:
+        try:
+            parsed = json.loads(env_val)
+            return parsed if isinstance(parsed, dict) else default
+        except json.JSONDecodeError:
+            return default
+    val = _cfg_get(cfg, key, default)
+    if isinstance(val, dict):
+        return val
+    if isinstance(val, str) and val.strip():
+        try:
+            parsed = json.loads(val)
+            return parsed if isinstance(parsed, dict) else default
+        except json.JSONDecodeError:
+            return default
+    return default
+
+
+def _normalize_ric(value: Any) -> Tuple[Optional[int], str]:
+    s = str(value).strip()
+    try:
+        return int(s), str(int(s))
+    except (ValueError, TypeError):
+        return None, s
+
+
+def _compile_rics(rics: List[Any]) -> Tuple[set, List[Tuple[int, int]]]:
+    singles = set()
+    ranges: List[Tuple[int, int]] = []
+    for item in rics:
+        if item is None:
+            continue
+        if isinstance(item, int):
+            singles.add(item)
+            continue
+        s = str(item).strip()
+        if not s:
+            continue
+        if "-" in s:
+            parts = [p.strip() for p in s.split("-", 1)]
+            if len(parts) == 2:
+                try:
+                    start = int(parts[0])
+                    end = int(parts[1])
+                except ValueError:
+                    continue
+                if start > end:
+                    start, end = end, start
+                ranges.append((start, end))
+                continue
+        try:
+            singles.add(int(s))
+        except ValueError:
+            continue
+    return singles, ranges
+
+
+def _ric_matches(ric_int: Optional[int], singles: set, ranges: List[Tuple[int, int]]) -> bool:
+    if ric_int is None:
+        return False
+    if ric_int in singles:
+        return True
+    for start, end in ranges:
+        if start <= ric_int <= end:
+            return True
+    return False
+
+
+class RoutingConfig:
+    def __init__(self, channel_filters: List[Dict[str, Any]], ric_to_user: Dict[str, str]):
+        self.channel_filters = []
+        for entry in channel_filters:
+            if not isinstance(entry, dict):
+                continue
+            channel = entry.get("channel")
+            rics = entry.get("rics", [])
+            if channel is None:
+                continue
+            if not isinstance(rics, list):
+                continue
+            singles, ranges = _compile_rics(rics)
+            self.channel_filters.append(
+                {
+                    "channel": channel,
+                    "singles": singles,
+                    "ranges": ranges,
+                }
+            )
+        self.ric_to_user = {}
+        for k, v in ric_to_user.items():
+            _, key = _normalize_ric(k)
+            self.ric_to_user[key] = str(v).strip()
+
+    @staticmethod
+    def from_dict(data: Dict[str, Any]) -> "RoutingConfig":
+        channel_filters = data.get("channel_filters", [])
+        ric_to_user = data.get("ric_to_user", {})
+        if not isinstance(channel_filters, list):
+            channel_filters = []
+        if not isinstance(ric_to_user, dict):
+            ric_to_user = {}
+        return RoutingConfig(channel_filters, ric_to_user)
+
+    @staticmethod
+    def load(path: str) -> "RoutingConfig":
+        with open(path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+        if not isinstance(data, dict):
+            data = {}
+        return RoutingConfig.from_dict(data)
+
+    def route(self, ric_key: str, ric_int: Optional[int]) -> Optional[Tuple[str, Any]]:
+        if ric_key in self.ric_to_user:
+            return ("user", self.ric_to_user[ric_key])
+        for entry in self.channel_filters:
+            if _ric_matches(ric_int, entry["singles"], entry["ranges"]):
+                return ("channel", entry["channel"])
+        return None
+
+
+class MeshMonitorSender:
+    def __init__(self, cfg: Optional[Dict[str, Any]] = None) -> None:
+        self.base_url = _get_str("MESHMONITOR_BASE_URL", cfg, "base_url", "http://localhost:8080").rstrip("/")
+        self.send_path = _get_str("MESHMONITOR_SEND_PATH", cfg, "send_path", "/api/v1/messages")
+        self.api_token = (_get_str("MESHMONITOR_API_TOKEN", cfg, "api_token", "") or "").strip()
+        self.timeout = _get_float("MESHMONITOR_TIMEOUT", cfg, "timeout", 10.0)
+        self.verify_tls = _get_bool("MESHMONITOR_VERIFY_TLS", cfg, "verify_tls", True)
+
+        self.message_field = _get_str("MM_MESSAGE_FIELD", cfg, "message_field", "text")
+        self.channel_field = _get_str("MM_CHANNEL_FIELD", cfg, "channel_field", "channel")
+        self.user_field = _get_str("MM_USER_FIELD", cfg, "user_field", "toNodeId")
+
+        self.extra_fields = _get_json("MM_EXTRA_JSON", cfg, "extra_json", {})
+
+    def send(self, kind: str, dest: Any, message: str, ric_key: str, timestamp: Any) -> None:
+        url = f"{self.base_url}{self.send_path}"
+        payload: Dict[str, Any] = {self.message_field: message}
+        if kind == "channel":
+            payload[self.channel_field] = dest
+        elif kind == "user":
+            payload[self.user_field] = dest
+        if isinstance(self.extra_fields, dict):
+            payload.update(self.extra_fields)
+
+        headers = {"Content-Type": "application/json"}
+        if self.api_token:
+            headers["Authorization"] = f"Bearer {self.api_token}"
+
+        resp = requests.post(url, json=payload, headers=headers, timeout=self.timeout, verify=self.verify_tls)
+        if not resp.ok:
+            raise RuntimeError(f"MeshMonitor send failed: {resp.status_code} {resp.text}")
+
+
+class Forwarder:
+    def __init__(
+        self,
+        routing: RoutingConfig,
+        sender: MeshMonitorSender,
+        runtime_cfg: Optional[Dict[str, Any]] = None,
+        message_cfg: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        self.routing = routing
+        self.sender = sender
+        queue_max = _get_int("QUEUE_MAX", runtime_cfg, "queue_max", 1000)
+        self.queue: "queue.Queue[Dict[str, Any]]" = queue.Queue(maxsize=queue_max)
+        self.stop_event = threading.Event()
+        self.worker = threading.Thread(target=self._worker, name="forwarder-worker", daemon=True)
+
+        self.max_len = _get_int("MAX_MESSAGE_LEN", runtime_cfg, "max_message_len", 0)
+        self.message_prefix = _get_str("MM_MESSAGE_PREFIX", message_cfg, "message_prefix", "") or ""
+        self.message_suffix = _get_str("MM_MESSAGE_SUFFIX", message_cfg, "message_suffix", "") or ""
+        self.include_ric = _get_bool("MM_INCLUDE_RIC", message_cfg, "include_ric", False)
+        self.include_timestamp = _get_bool("MM_INCLUDE_TIMESTAMP", message_cfg, "include_timestamp", False)
+
+    def start(self) -> None:
+        self.worker.start()
+
+    def stop(self) -> None:
+        self.stop_event.set()
+        self.worker.join(timeout=5)
+
+    def enqueue(self, payload: Dict[str, Any]) -> None:
+        try:
+            self.queue.put_nowait(payload)
+        except queue.Full:
+            logging.warning("Queue full, dropping message")
+
+    def _worker(self) -> None:
+        while not self.stop_event.is_set():
+            try:
+                item = self.queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            try:
+                self._process(item)
+            except Exception as exc:  # noqa: BLE001
+                logging.exception("Failed to process message: %s", exc)
+            finally:
+                self.queue.task_done()
+
+    def _process(self, item: Dict[str, Any]) -> None:
+        ric_raw = item.get("address")
+        message = item.get("message")
+        timestamp = item.get("timestamp")
+        if message is None or ric_raw is None:
+            return
+        ric_int, ric_key = _normalize_ric(ric_raw)
+        if not ric_key:
+            return
+
+        route = self.routing.route(ric_key, ric_int)
+        if not route:
+            return
+        kind, dest = route
+
+        text = str(message)
+        parts = []
+        if self.message_prefix:
+            parts.append(self.message_prefix)
+        if text:
+            parts.append(text)
+        if self.include_ric:
+            parts.append(f"[RIC {ric_key}]")
+        if self.include_timestamp and timestamp is not None:
+            parts.append(f"[TS {timestamp}]")
+        if self.message_suffix:
+            parts.append(self.message_suffix)
+        text = " ".join(p for p in parts if p)
+        if self.max_len > 0 and len(text) > self.max_len:
+            text = text[: self.max_len]
+
+        self.sender.send(kind, dest, text, ric_key, timestamp)
+        logging.info("Forwarded RIC %s to %s=%s", ric_key, kind, dest)
+
+
+def _setup_logging(runtime_cfg: Optional[Dict[str, Any]] = None) -> None:
+    level = _get_str("LOG_LEVEL", runtime_cfg, "log_level", "INFO")
+    level = (level or "INFO").upper()
+    logging.basicConfig(
+        level=getattr(logging, level, logging.INFO),
+        format="%(asctime)s %(levelname)s %(message)s",
+    )
+
+
+def main() -> None:
+    config_path = os.getenv("CONFIG_PATH", "config.yaml")
+    with open(config_path, "r", encoding="utf-8") as f:
+        config_data = yaml.safe_load(f) or {}
+    if not isinstance(config_data, dict):
+        config_data = {}
+
+    runtime_cfg = config_data.get("runtime", {})
+    mqtt_cfg = config_data.get("mqtt", {})
+    mesh_cfg = config_data.get("meshmonitor", {})
+
+    _setup_logging(runtime_cfg)
+    routing = RoutingConfig.from_dict(config_data)
+    sender = MeshMonitorSender(mesh_cfg)
+    forwarder = Forwarder(routing, sender, runtime_cfg, mesh_cfg)
+    forwarder.start()
+
+    mqtt_host = _get_str("MQTT_HOST", mqtt_cfg, "host", "localhost")
+    mqtt_port = _get_int("MQTT_PORT", mqtt_cfg, "port", 1883)
+    mqtt_topic = _get_str("MQTT_TOPIC", mqtt_cfg, "topic", "owrx/POCSAG")
+    mqtt_qos = _get_int("MQTT_QOS", mqtt_cfg, "qos", 0)
+    mqtt_client_id = _get_str("MQTT_CLIENT_ID", mqtt_cfg, "client_id", "pocsag-forwarder")
+    mqtt_username = _get_str("MQTT_USERNAME", mqtt_cfg, "username", None)
+    mqtt_password = _get_str("MQTT_PASSWORD", mqtt_cfg, "password", None)
+
+    client = mqtt.Client(client_id=mqtt_client_id, clean_session=True)
+    if mqtt_username:
+        client.username_pw_set(mqtt_username, mqtt_password)
+
+    if _get_bool("MQTT_TLS", mqtt_cfg, "tls", False):
+        client.tls_set(
+            ca_certs=_get_str("MQTT_CA_CERT", mqtt_cfg, "ca_cert", None) or None,
+            certfile=_get_str("MQTT_CLIENT_CERT", mqtt_cfg, "client_cert", None) or None,
+            keyfile=_get_str("MQTT_CLIENT_KEY", mqtt_cfg, "client_key", None) or None,
+        )
+
+    def on_connect(_client, _userdata, _flags, rc):
+        if rc == 0:
+            logging.info("Connected to MQTT broker %s:%s", mqtt_host, mqtt_port)
+            _client.subscribe(mqtt_topic, qos=mqtt_qos)
+        else:
+            logging.error("MQTT connection failed with rc=%s", rc)
+
+    def on_message(_client, _userdata, msg):
+        try:
+            payload = json.loads(msg.payload.decode("utf-8"))
+        except Exception:  # noqa: BLE001
+            logging.warning("Invalid JSON payload, skipping")
+            return
+        if isinstance(payload, dict):
+            forwarder.enqueue(payload)
+
+    client.on_connect = on_connect
+    client.on_message = on_message
+
+    client.connect(mqtt_host, mqtt_port, keepalive=60)
+    client.loop_start()
+
+    stop_event = threading.Event()
+
+    def _handle_signal(_signum, _frame):
+        stop_event.set()
+
+    signal.signal(signal.SIGINT, _handle_signal)
+    signal.signal(signal.SIGTERM, _handle_signal)
+
+    try:
+        while not stop_event.is_set():
+            time.sleep(0.5)
+    finally:
+        client.loop_stop()
+        forwarder.stop()
+
+
+if __name__ == "__main__":
+    main()

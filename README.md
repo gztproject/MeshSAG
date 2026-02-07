@@ -1,0 +1,88 @@
+# POCSAG -> MeshMonitor Forwarder
+
+Listens to POCSAG JSON messages on MQTT and forwards matched RICs to MeshMonitor for delivery into Meshtastic.
+
+## What it does
+- Subscribes to `owrx/POCSAG` (JSON with `message`, `address`, `timestamp`)
+- Routes by RIC:
+  - `ric_to_user`: exact RIC -> short name (direct message)
+  - `channel_filters`: list of RICs or ranges -> channel
+
+MeshMonitor v2 provides an API with token auth and Swagger docs at `/api/v1/docs` on your instance. The release notes also mention a `POST /api/v1/messages` endpoint for programmatic sends.
+
+## Files
+- `pocsag_forwarder.py`
+- `config.example.yaml`
+- `requirements.txt`
+
+## Setup
+1. Create config:
+   - Copy `config.example.yaml` to `config.yaml` and edit.
+2. Install deps:
+   - `python3 -m venv .venv`
+   - `. .venv/bin/activate`
+   - `pip install -r requirements.txt`
+3. Set environment or config:
+   - Preferred: put settings in `config.yaml` under `mqtt`, `meshmonitor`, and `runtime`.
+   - Environment variables are optional and override config values.
+   - Minimal config example:
+   ```yaml
+   mqtt:
+     host: localhost
+     port: 1883
+     topic: owrx/POCSAG
+
+   meshmonitor:
+     base_url: http://localhost:8080
+     api_token: your_token_here
+     # message_prefix, message_suffix, include_ric, include_timestamp also supported
+
+   runtime:
+     log_level: INFO
+   ```
+   - Optional env overrides:
+   - `CONFIG_PATH` (default `config.yaml`)
+   - `MQTT_HOST`, `MQTT_PORT`, `MQTT_TOPIC`, `MQTT_QOS`, `MQTT_CLIENT_ID`
+   - `MQTT_USERNAME`, `MQTT_PASSWORD`
+   - `MQTT_TLS=true`, `MQTT_CA_CERT`, `MQTT_CLIENT_CERT`, `MQTT_CLIENT_KEY`
+   - `MESHMONITOR_BASE_URL`, `MESHMONITOR_API_TOKEN`, `MESHMONITOR_SEND_PATH`
+   - `MESHMONITOR_TIMEOUT`, `MESHMONITOR_VERIFY_TLS`
+   - `MM_MESSAGE_FIELD`, `MM_CHANNEL_FIELD`, `MM_USER_FIELD`
+   - `MM_MESSAGE_PREFIX`, `MM_MESSAGE_SUFFIX`
+   - `MM_EXTRA_JSON`, `MM_INCLUDE_RIC`, `MM_INCLUDE_TIMESTAMP`
+   - `QUEUE_MAX`, `MAX_MESSAGE_LEN`, `LOG_LEVEL`
+4. Run:
+   - `python pocsag_forwarder.py`
+
+## MeshMonitor request mapping
+By default, the sender posts to `/api/v1/messages` with JSON:
+- channel: `{ "text": "...", "channel": <channel> }`
+- user: `{ "text": "...", "toNodeId": "<shortName>" }`
+
+If your MeshMonitor API expects different field names or extra params, adjust via env:
+- `MM_MESSAGE_FIELD` (default `text`)
+- `MM_CHANNEL_FIELD` (default `channel`)
+- `MM_USER_FIELD` (default `toNodeId`)
+- `MM_MESSAGE_PREFIX`, `MM_MESSAGE_SUFFIX`
+- `MM_EXTRA_JSON` (raw JSON string merged into the payload)
+- `MM_INCLUDE_RIC`, `MM_INCLUDE_TIMESTAMP` (append `[RIC ...]` / `[TS ...]` to message text)
+
+Note: Verify the actual payload shape for your MeshMonitor version using the Swagger UI on your server.
+
+## Example routing config
+```yaml
+channel_filters:
+  - channel: 0
+    rics:
+      - 123456
+      - "123460-123470"
+
+ric_to_user:
+  123499: "ALPHA"
+```
+
+## Optional MQTT TLS
+Set `MQTT_TLS=true` and provide:
+- `MQTT_CA_CERT`
+- `MQTT_CLIENT_CERT`
+- `MQTT_CLIENT_KEY`

@@ -1,0 +1,45 @@
+mqtt:
+  host: localhost
+  port: 1883
+  topic: owrx/POCSAG
+  qos: 0
+  client_id: pocsag-forwarder
+  username: ""
+  password: ""
+  tls: false
+  ca_cert: ""
+  client_cert: ""
+  client_key: ""
+
+meshmonitor:
+  base_url: http://localhost:8080
+  send_path: /api/v1/messages
+  api_token: ""
+  timeout: 10
+  verify_tls: true
+  message_field: text
+  channel_field: channel
+  user_field: toNodeId
+  message_prefix: ""
+  message_suffix: ""
+  include_ric: false
+  include_timestamp: false
+  extra_json: {}
+
+runtime:
+  log_level: INFO
+  queue_max: 1000
+  max_message_len: 0
+
+channel_filters:
+  - channel: 0
+    rics:
+      - 123456
+      - "123460-123470"
+  - channel: 1
+    rics:
+      - 200001
+
+ric_to_user:
+  123499: "ALPHA"
+  123500: "BETA"
