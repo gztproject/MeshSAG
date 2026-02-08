@@ -543,6 +543,19 @@ def main() -> None:
     except Exception:  # noqa: BLE001
         logging.info("Config (redacted): %s", _redact_config(config_data))
     routing = RoutingConfig.from_dict(config_data)
+    logging.debug(
+        "Exclude parsed (global): singles=%s ranges=%s",
+        sorted(routing.exclude_singles),
+        routing.exclude_ranges,
+    )
+    for entry in routing.channel_filters:
+        if entry["exclude_singles"] or entry["exclude_ranges"]:
+            logging.debug(
+                "Exclude parsed (channel %s): singles=%s ranges=%s",
+                entry["channel"],
+                sorted(entry["exclude_singles"]),
+                entry["exclude_ranges"],
+            )
     sender = MeshMonitorSender(mesh_cfg)
     forwarder = Forwarder(routing, sender, runtime_cfg, mesh_cfg, dedupe_cfg)
     forwarder.start()
