@@ -223,6 +223,7 @@ class RoutingConfig:
 
     def route(self, ric_key: str, ric_int: Optional[int]) -> Optional[Tuple[str, Any]]:
         if _ric_matches(ric_int, self.exclude_singles, self.exclude_ranges):
+            logging.debug("RIC %s ignored by global exclude list", ric_key)
             return None
         if ric_key in self.ric_to_user:
             return ("user", self.ric_to_user[ric_key])
@@ -235,6 +236,7 @@ class RoutingConfig:
 
     def route_all(self, ric_key: str, ric_int: Optional[int]) -> List[Tuple[str, Any]]:
         if _ric_matches(ric_int, self.exclude_singles, self.exclude_ranges):
+            logging.debug("RIC %s ignored by global exclude list", ric_key)
             return []
         results: List[Tuple[str, Any]] = []
         seen = set()
@@ -254,6 +256,8 @@ class RoutingConfig:
                 if key not in seen:
                     results.append(key)
                     seen.add(key)
+            elif _ric_matches(ric_int, entry["exclude_singles"], entry["exclude_ranges"]):
+                logging.debug("RIC %s ignored by channel %s exclude list", ric_key, entry["channel"])
 
         return results
 
