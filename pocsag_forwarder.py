@@ -99,6 +99,37 @@ def _get_json(env_name: str, cfg: Optional[Dict[str, Any]], key: str, default: D
     return default
 
 
+def _redact_config(data: Any) -> Any:
+    sensitive_keys = {
+        "password",
+        "api_token",
+        "redis_password",
+        "token",
+        "secret",
+        "api_key",
+        "apikey",
+    }
+    if isinstance(data, dict):
+        redacted: Dict[Any, Any] = {}
+        for k, v in data.items():
+            key = str(k).lower()
+            if (
+                key in sensitive_keys
+                or key.endswith("_password")
+                or key.endswith("_token")
+                or key.endswith("_secret")
+                or key.endswith("_apikey")
+                or key.endswith("_api_key")
+            ):
+                redacted[k] = "***REDACTED***"
+            else:
+                redacted[k] = _redact_config(v)
+        return redacted
+    if isinstance(data, list):
+        return [_redact_config(v) for v in data]
+    return data
+
+
 def _normalize_ric(value: Any) -> Tuple[Optional[int], str]:
     s = str(value).strip()
     try:
@@ -505,6 +536,12 @@ def main() -> None:
     dedupe_cfg = config_data.get("dedupe", {})
 
     _setup_logging(runtime_cfg)
+    logging.info("=== MeshSAG starting ===")
+    logging.info("Config path: %s", config_path)
+    try:
+        logging.info("Config (redacted):\n%s", yaml.safe_dump(_redact_config(config_data), sort_keys=False).strip())
+    except Exception:  # noqa: BLE001
+        logging.info("Config (redacted): %s", _redact_config(config_data))
     routing = RoutingConfig.from_dict(config_data)
     sender = MeshMonitorSender(mesh_cfg)
     forwarder = Forwarder(routing, sender, runtime_cfg, mesh_cfg, dedupe_cfg)
