@@ -28,6 +28,7 @@ meshmonitor:
 
 runtime:
   log_level: INFO
+  log_file: /var/log/meshsag.log
   queue_max: 1000
   max_message_len: 0
 
@@ -49,9 +50,14 @@ channel_filters:
     rics:
       - 123456
       - "123460-123470"
+      - "!123462"
   - channel: 1
     rics:
       - 200001
+
+exclude_rics:
+  - 123499
+  - "123500-123520"
 
 ric_to_user:
   123499: "ALPHA"

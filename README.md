@@ -8,6 +8,8 @@ Listens to POCSAG JSON messages on MQTT and forwards matched RICs to MeshMonitor
   - `ric_to_user`: exact RIC -> short name (direct message)
   - `channel_filters`: list of RICs or ranges -> channel
   - A single RIC can match multiple entries; the message is sent to all matches.
+  - `exclude_rics`: list of RICs or ranges to suppress entirely.
+  - Per-channel exclusions: prefix a RIC or range with `!` inside `rics` (quote the value so YAML doesn't treat `!` as a tag).
 
 MeshMonitor v2 provides an API with token auth and Swagger docs at `/api/v1/docs` on your instance. The release notes also mention a `POST /api/v1/messages` endpoint for programmatic sends.
 
@@ -40,6 +42,7 @@ MeshMonitor v2 provides an API with token auth and Swagger docs at `/api/v1/docs
 
    runtime:
      log_level: INFO
+     log_file: /var/log/meshsag.log
  
    dedupe:
      enabled: true
@@ -58,6 +61,7 @@ MeshMonitor v2 provides an API with token auth and Swagger docs at `/api/v1/docs
    - `MM_EXTRA_JSON`, `MM_INCLUDE_RIC`, `MM_INCLUDE_TIMESTAMP`
    - `DEDUPE_ENABLED`, `DEDUPE_WINDOW_SECONDS`, `DEDUPE_BACKEND`, `DEDUPE_KEY_PREFIX`
    - `REDIS_URL` or `REDIS_HOST`, `REDIS_PORT`, `REDIS_DB`, `REDIS_PASSWORD`, `REDIS_TLS`
+   - `LOG_FILE`
    - `QUEUE_MAX`, `MAX_MESSAGE_LEN`, `LOG_LEVEL`
 4. Run:
    - `python pocsag_forwarder.py`
@@ -87,6 +91,11 @@ channel_filters:
     rics:
       - 123456
       - "123460-123470"
+      - "!123462"
+
+exclude_rics:
+  - 123499
+  - "123500-123520"
 
 ric_to_user:
   123499: "ALPHA"
@@ -113,9 +122,12 @@ Recommended for servers. This repo includes a unit file at `systemd/meshsag.serv
    - `sudo cp /opt/meshsag/config.example.yaml /etc/meshsag/config.yaml`
    - `sudo chown -R meshsag:meshsag /etc/meshsag`
    - `sudo chmod 600 /etc/meshsag/config.yaml`
+   - `sudo touch /var/log/meshsag.log`
+   - `sudo chown meshsag:meshsag /var/log/meshsag.log`
+   - `sudo chmod 640 /var/log/meshsag.log`
 4. Install and enable the service:
    - `sudo cp /opt/meshsag/systemd/meshsag.service /etc/systemd/system/meshsag.service`
    - `sudo systemctl daemon-reload`
    - `sudo systemctl enable --now meshsag`
 5. Logs:
-   - `journalctl -u meshsag -f`
+   - `sudo journalctl -u meshsag -f`

@@ -2,6 +2,7 @@
 import hashlib
 import json
 import logging
+import logging.handlers
 import os
 import queue
 import signal
@@ -137,6 +138,21 @@ def _compile_rics(rics: List[Any]) -> Tuple[set, List[Tuple[int, int]]]:
     return singles, ranges
 
 
+def _split_rics(rics: List[Any]) -> Tuple[List[Any], List[Any]]:
+    includes: List[Any] = []
+    excludes: List[Any] = []
+    for item in rics:
+        if isinstance(item, str):
+            s = item.strip()
+            if s.startswith("!"):
+                val = s[1:].strip()
+                if val:
+                    excludes.append(val)
+                continue
+        includes.append(item)
+    return includes, excludes
+
+
 def _ric_matches(ric_int: Optional[int], singles: set, ranges: List[Tuple[int, int]]) -> bool:
     if ric_int is None:
         return False
@@ -149,7 +165,12 @@ def _ric_matches(ric_int: Optional[int], singles: set, ranges: List[Tuple[int, i
 
 
 class RoutingConfig:
-    def __init__(self, channel_filters: List[Dict[str, Any]], ric_to_user: Dict[str, str]):
+    def __init__(
+        self,
+        channel_filters: List[Dict[str, Any]],
+        ric_to_user: Dict[str, str],
+        exclude_rics: List[Any],
+    ):
         self.channel_filters = []
         for entry in channel_filters:
             if not isinstance(entry, dict):
@@ -160,12 +181,16 @@ class RoutingConfig:
                 continue
             if not isinstance(rics, list):
                 continue
-            singles, ranges = _compile_rics(rics)
+            include_rics, exclude_rics = _split_rics(rics)
+            singles, ranges = _compile_rics(include_rics)
+            exclude_singles, exclude_ranges = _compile_rics(exclude_rics)
             self.channel_filters.append(
                 {
                     "channel": channel,
                     "singles": singles,
                     "ranges": ranges,
+                    "exclude_singles": exclude_singles,
+                    "exclude_ranges": exclude_ranges,
                 }
             )
         self.ric_to_user = {}
@@ -173,15 +198,20 @@ class RoutingConfig:
             _, key = _normalize_ric(k)
             self.ric_to_user[key] = str(v).strip()
 
+        self.exclude_singles, self.exclude_ranges = _compile_rics(exclude_rics or [])
+
     @staticmethod
     def from_dict(data: Dict[str, Any]) -> "RoutingConfig":
         channel_filters = data.get("channel_filters", [])
         ric_to_user = data.get("ric_to_user", {})
+        exclude_rics = data.get("exclude_rics", [])
         if not isinstance(channel_filters, list):
             channel_filters = []
         if not isinstance(ric_to_user, dict):
             ric_to_user = {}
-        return RoutingConfig(channel_filters, ric_to_user)
+        if not isinstance(exclude_rics, list):
+            exclude_rics = []
+        return RoutingConfig(channel_filters, ric_to_user, exclude_rics)
 
     @staticmethod
     def load(path: str) -> "RoutingConfig":
@@ -192,14 +222,20 @@ class RoutingConfig:
         return RoutingConfig.from_dict(data)
 
     def route(self, ric_key: str, ric_int: Optional[int]) -> Optional[Tuple[str, Any]]:
+        if _ric_matches(ric_int, self.exclude_singles, self.exclude_ranges):
+            return None
         if ric_key in self.ric_to_user:
             return ("user", self.ric_to_user[ric_key])
         for entry in self.channel_filters:
-            if _ric_matches(ric_int, entry["singles"], entry["ranges"]):
+            if _ric_matches(ric_int, entry["singles"], entry["ranges"]) and not _ric_matches(
+                ric_int, entry["exclude_singles"], entry["exclude_ranges"]
+            ):
                 return ("channel", entry["channel"])
         return None
 
     def route_all(self, ric_key: str, ric_int: Optional[int]) -> List[Tuple[str, Any]]:
+        if _ric_matches(ric_int, self.exclude_singles, self.exclude_ranges):
+            return []
         results: List[Tuple[str, Any]] = []
         seen = set()
 
@@ -210,7 +246,9 @@ class RoutingConfig:
             seen.add(key)
 
         for entry in self.channel_filters:
-            if _ric_matches(ric_int, entry["singles"], entry["ranges"]):
+            if _ric_matches(ric_int, entry["singles"], entry["ranges"]) and not _ric_matches(
+                ric_int, entry["exclude_singles"], entry["exclude_ranges"]
+            ):
                 dest = entry["channel"]
                 key = ("channel", dest)
                 if key not in seen:
@@ -427,10 +465,27 @@ class Forwarder:
 def _setup_logging(runtime_cfg: Optional[Dict[str, Any]] = None) -> None:
     level = _get_str("LOG_LEVEL", runtime_cfg, "log_level", "INFO")
     level = (level or "INFO").upper()
-    logging.basicConfig(
-        level=getattr(logging, level, logging.INFO),
-        format="%(asctime)s %(levelname)s %(message)s",
-    )
+    log_file = _get_str("LOG_FILE", runtime_cfg, "log_file", "/var/log/meshsag.log")
+
+    formatter = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+    root = logging.getLogger()
+    root.handlers.clear()
+    root.setLevel(getattr(logging, level, logging.INFO))
+
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(formatter)
+    root.addHandler(stream_handler)
+
+    if log_file:
+        try:
+            log_dir = os.path.dirname(log_file)
+            if log_dir:
+                os.makedirs(log_dir, exist_ok=True)
+            file_handler = logging.handlers.WatchedFileHandler(log_file)
+            file_handler.setFormatter(formatter)
+            root.addHandler(file_handler)
+        except Exception as exc:  # noqa: BLE001
+            root.warning("Failed to set up log file %s: %s", log_file, exc)
 
 
 def main() -> None:
