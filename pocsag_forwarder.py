@@ -346,50 +346,80 @@ class DedupeCache:
         url = f"{scheme}://{host}:{port}/{db}"
         self._redis = redis.Redis.from_url(url, password=password)
 
-    def _redis_allow(self, key: str) -> Optional[bool]:
+    def _redis_seen(self, key: str) -> Optional[bool]:
         if self._redis is None:
             return None
         try:
             redis_key = f"{self.key_prefix}:{key}"
-            allowed = bool(self._redis.set(redis_key, "1", nx=True, ex=self.window_seconds))
+            exists = bool(self._redis.exists(redis_key))
             logging.debug(
-                "Redis dedupe set key=%s allowed=%s ttl=%ss",
+                "Redis dedupe exists key=%s exists=%s",
                 redis_key,
-                allowed,
-                self.window_seconds,
+                exists,
             )
-            return allowed
+            return exists
         except Exception as exc:  # noqa: BLE001
             logging.warning("Redis dedupe failed, falling back to memory: %s", exc)
             self._redis = None
             self.backend = "memory"
             return None
 
-    def _memory_allow(self, key: str) -> bool:
+    def _redis_mark(self, key: str) -> Optional[bool]:
+        if self._redis is None:
+            return None
+        try:
+            redis_key = f"{self.key_prefix}:{key}"
+            self._redis.set(redis_key, "1", ex=self.window_seconds)
+            logging.debug(
+                "Redis dedupe set key=%s ttl=%ss",
+                redis_key,
+                self.window_seconds,
+            )
+            return True
+        except Exception as exc:  # noqa: BLE001
+            logging.warning("Redis dedupe failed, falling back to memory: %s", exc)
+            self._redis = None
+            self.backend = "memory"
+            return None
+
+    def _memory_seen(self, key: str) -> bool:
         now = time.time()
         self._ops += 1
         if self._ops % self._cleanup_every == 0:
             self._cleanup(now)
         expires_at = self._memory.get(key)
-        if expires_at and expires_at > now:
-            return False
+        return bool(expires_at and expires_at > now)
+
+    def _memory_mark(self, key: str) -> None:
+        now = time.time()
         self._memory[key] = now + self.window_seconds
-        return True
 
     def _cleanup(self, now: float) -> None:
         expired = [k for k, v in self._memory.items() if v <= now]
         for k in expired:
             self._memory.pop(k, None)
 
-    def allow(self, key: str) -> bool:
+    def is_duplicate(self, key: str) -> bool:
         if not self.enabled or self.window_seconds <= 0:
-            return True
+            return False
+        cache_key = f"{self.key_prefix}:{key}"
         if self.backend == "redis":
-            allowed = self._redis_allow(key)
-            if allowed is not None:
-                return allowed
+            exists = self._redis_seen(key)
+            if exists is not None:
+                return exists
             logging.debug("Redis dedupe unavailable, falling back to memory")
-        return self._memory_allow(key)
+        return self._memory_seen(cache_key)
+
+    def mark_sent(self, key: str) -> None:
+        if not self.enabled or self.window_seconds <= 0:
+            return
+        cache_key = f"{self.key_prefix}:{key}"
+        if self.backend == "redis":
+            marked = self._redis_mark(key)
+            if marked is not None:
+                return
+            logging.debug("Redis dedupe unavailable, falling back to memory")
+        self._memory_mark(cache_key)
 
 
 class MeshMonitorSender:
@@ -506,11 +536,13 @@ class Forwarder:
             text = text[: self.max_len]
 
         for kind, dest in routes:
-            if not self.dedupe.allow(self._dedupe_key(kind, dest, ric_key, text)):
+            dedupe_key = self._dedupe_key(kind, dest, ric_key, text)
+            if self.dedupe.is_duplicate(dedupe_key):
                 logging.debug("Duplicate suppressed for RIC %s to %s=%s", ric_key, kind, dest)
                 continue
             try:
                 self.sender.send(kind, dest, text, ric_key, timestamp)
+                self.dedupe.mark_sent(dedupe_key)
                 logging.info("Forwarded RIC %s to %s=%s", ric_key, kind, dest)
             except Exception as exc:  # noqa: BLE001
                 logging.exception("Failed to send RIC %s to %s=%s: %s", ric_key, kind, dest, exc)
