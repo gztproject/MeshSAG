@@ -1,4 +1,5 @@
-> **AI NOTICE**: This repository includes code and documentation that were assisted by AI. Review changes carefully before deploying, especially anything that handles credentials, network access, or system services.
+> ⚠️ **AI-GENERATED CONTENT WARNING**  
+> This repository includes code and documentation assisted by AI. **Review all changes carefully before deploying**, especially anything that handles credentials, network access, or system services.
 
 # POCSAG -> MeshMonitor Forwarder
 
