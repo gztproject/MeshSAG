@@ -9,6 +9,7 @@ import signal
 import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 import requests
 import yaml
@@ -128,6 +129,19 @@ def _redact_config(data: Any) -> Any:
     if isinstance(data, list):
         return [_redact_config(v) for v in data]
     return data
+
+
+def _redact_url(url: str) -> str:
+    try:
+        parsed = urlparse(url)
+        host = parsed.hostname or ""
+        if parsed.port:
+            host = f"{host}:{parsed.port}"
+        path = parsed.path or ""
+        scheme = parsed.scheme or "redis"
+        return f"{scheme}://{host}{path}"
+    except Exception:  # noqa: BLE001
+        return "<redacted>"
 
 
 def _normalize_ric(value: Any) -> Tuple[Optional[int], str]:
@@ -318,6 +332,7 @@ class DedupeCache:
 
         url = _get_str("REDIS_URL", cfg, "redis_url", None)
         if url:
+            logging.debug("Redis dedupe using url=%s", _redact_url(url))
             self._redis = redis.Redis.from_url(url)
             return
 
@@ -326,6 +341,7 @@ class DedupeCache:
         db = _get_int("REDIS_DB", cfg, "redis_db", 0)
         password = _get_str("REDIS_PASSWORD", cfg, "redis_password", None)
         tls = _get_bool("REDIS_TLS", cfg, "redis_tls", False)
+        logging.debug("Redis dedupe using host=%s port=%s db=%s tls=%s", host, port, db, tls)
         scheme = "rediss" if tls else "redis"
         url = f"{scheme}://{host}:{port}/{db}"
         self._redis = redis.Redis.from_url(url, password=password)
@@ -335,7 +351,14 @@ class DedupeCache:
             return None
         try:
             redis_key = f"{self.key_prefix}:{key}"
-            return bool(self._redis.set(redis_key, "1", nx=True, ex=self.window_seconds))
+            allowed = bool(self._redis.set(redis_key, "1", nx=True, ex=self.window_seconds))
+            logging.debug(
+                "Redis dedupe set key=%s allowed=%s ttl=%ss",
+                redis_key,
+                allowed,
+                self.window_seconds,
+            )
+            return allowed
         except Exception as exc:  # noqa: BLE001
             logging.warning("Redis dedupe failed, falling back to memory: %s", exc)
             self._redis = None
@@ -365,6 +388,7 @@ class DedupeCache:
             allowed = self._redis_allow(key)
             if allowed is not None:
                 return allowed
+            logging.debug("Redis dedupe unavailable, falling back to memory")
         return self._memory_allow(key)
 
 
