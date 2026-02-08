@@ -200,7 +200,7 @@ class RoutingConfig:
         self,
         channel_filters: List[Dict[str, Any]],
         ric_to_user: Dict[str, str],
-        exclude_rics: List[Any],
+        global_exclude_rics: List[Any],
     ):
         self.channel_filters = []
         for entry in channel_filters:
@@ -212,9 +212,9 @@ class RoutingConfig:
                 continue
             if not isinstance(rics, list):
                 continue
-            include_rics, exclude_rics = _split_rics(rics)
+            include_rics, channel_excludes = _split_rics(rics)
             singles, ranges = _compile_rics(include_rics)
-            exclude_singles, exclude_ranges = _compile_rics(exclude_rics)
+            exclude_singles, exclude_ranges = _compile_rics(channel_excludes)
             self.channel_filters.append(
                 {
                     "channel": channel,
@@ -229,7 +229,7 @@ class RoutingConfig:
             _, key = _normalize_ric(k)
             self.ric_to_user[key] = str(v).strip()
 
-        self.exclude_singles, self.exclude_ranges = _compile_rics(exclude_rics or [])
+        self.exclude_singles, self.exclude_ranges = _compile_rics(global_exclude_rics or [])
 
     @staticmethod
     def from_dict(data: Dict[str, Any]) -> "RoutingConfig":
