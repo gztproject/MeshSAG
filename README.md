@@ -131,3 +131,29 @@ Recommended for servers. This repo includes a unit file at `systemd/meshsag.serv
    - `sudo systemctl enable --now meshsag`
 5. Logs:
    - `sudo journalctl -u meshsag -f`
+
+## Updates (manual `git pull`)
+Assuming the repo is installed at `/opt/meshsag` and running as the `meshsag` service.
+
+1. Pull latest:
+   - `cd /opt/meshsag`
+   - `sudo -u meshsag git pull --ff-only`
+2. Update Python deps (safe to run every time):
+   - `sudo /opt/meshsag/.venv/bin/pip install -r /opt/meshsag/requirements.txt`
+3. Restart the service:
+   - `sudo systemctl restart meshsag`
+4. Verify:
+   - `sudo journalctl -u meshsag -n 100 --no-pager`
+5. If `config.example.yaml` changed, review and merge updates into `/etc/meshsag/config.yaml`.
+
+## Install/update scripts
+If you prefer, use the bundled scripts (run as root):
+- Install: `sudo bash scripts/install.sh`
+- Update: `sudo bash scripts/update.sh`
+
+You can override defaults via env vars:
+- `INSTALL_DIR`, `CONFIG_DIR`, `SERVICE_NAME`, `SERVICE_USER`, `LOG_FILE`
+
+## Log rotation
+If you use the install script, it installs `logrotate/meshsag` to `/etc/logrotate.d/meshsag`.
+It rotates `/var/log/meshsag.log` daily and keeps 14 compressed archives.
