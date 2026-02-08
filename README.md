@@ -1,3 +1,5 @@
+> **AI NOTICE**: This repository includes code and documentation that were assisted by AI. Review changes carefully before deploying, especially anything that handles credentials, network access, or system services.
+
 # POCSAG -> MeshMonitor Forwarder
 
 Listens to POCSAG JSON messages on MQTT and forwards matched RICs to MeshMonitor for delivery into Meshtastic.
