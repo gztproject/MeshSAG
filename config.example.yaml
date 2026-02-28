@@ -23,6 +23,7 @@ meshmonitor:
   message_prefix: ""
   message_suffix: ""
   include_ric: false
+  include_ric_name: false
   include_timestamp: false
   extra_json: {}
 
@@ -30,7 +31,7 @@ runtime:
   log_level: INFO
   log_file: /var/log/meshsag.log
   queue_max: 1000
-  max_message_len: 0
+  max_message_len: 233
 
 dedupe:
   enabled: false
@@ -58,6 +59,10 @@ channel_filters:
 exclude_rics:
   - 123499
   - "123500-123520"
+
+ric_phonebook_file: ric_phonebook.example.yaml  # optional, relative to this config
+ric_phonebook:
+  123498: "DISPATCH"
 
 ric_to_user:
   123499: "ALPHA"

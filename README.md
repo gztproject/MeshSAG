@@ -9,6 +9,7 @@ Listens to POCSAG JSON messages on MQTT and forwards matched RICs to MeshMonitor
 - Subscribes to `owrx/POCSAG` (JSON with `message`, `address`, `timestamp`)
 - Routes by RIC:
   - `ric_to_user`: exact RIC -> short name (direct message)
+  - `ric_phonebook`: optional RIC -> label mapping for message tags
   - `channel_filters`: list of RICs or ranges -> channel
   - A single RIC can match multiple entries; the message is sent to all matches.
   - `exclude_rics`: list of RICs or ranges to suppress entirely.
@@ -19,6 +20,7 @@ MeshMonitor v2 provides an API with token auth and Swagger docs at `/api/v1/docs
 ## Files
 - `pocsag_forwarder.py`
 - `config.example.yaml`
+- `ric_phonebook.example.yaml`
 - `requirements.txt`
 
 ## Setup
@@ -61,7 +63,7 @@ MeshMonitor v2 provides an API with token auth and Swagger docs at `/api/v1/docs
    - `MESHMONITOR_TIMEOUT`, `MESHMONITOR_VERIFY_TLS`
    - `MM_MESSAGE_FIELD`, `MM_CHANNEL_FIELD`, `MM_USER_FIELD`
    - `MM_MESSAGE_PREFIX`, `MM_MESSAGE_SUFFIX`
-   - `MM_EXTRA_JSON`, `MM_INCLUDE_RIC`, `MM_INCLUDE_TIMESTAMP`
+   - `MM_EXTRA_JSON`, `MM_INCLUDE_RIC`, `MM_INCLUDE_RIC_NAME`, `MM_INCLUDE_TIMESTAMP`
    - `DEDUPE_ENABLED`, `DEDUPE_WINDOW_SECONDS`, `DEDUPE_BACKEND`, `DEDUPE_KEY_PREFIX`
    - `REDIS_URL` or `REDIS_HOST`, `REDIS_PORT`, `REDIS_DB`, `REDIS_PASSWORD`, `REDIS_TLS`
    - `LOG_FILE`
@@ -102,6 +104,18 @@ exclude_rics:
 
 ric_to_user:
   123499: "ALPHA"
+```
+
+Optional phonebook (RIC -> label):
+```yaml
+ric_phonebook_file: ric_phonebook.yaml
+ric_phonebook:
+  123498: "DISPATCH"
+```
+
+Example output text when `include_ric: true` and `include_ric_name: true`:
+```
+ALERT: RESPOND TO 123 MAIN ST [RIC 123498 DISPATCH]
 ```
 
 ## Optional MQTT TLS

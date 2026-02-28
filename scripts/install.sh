@@ -51,8 +51,16 @@ if [[ ! -f "${CONFIG_DIR}/config.yaml" ]]; then
 else
   log "Config exists, leaving in place."
 fi
+
+if [[ -f "${INSTALL_DIR}/ric_phonebook.example.yaml" && ! -f "${CONFIG_DIR}/ric_phonebook.yaml" ]]; then
+  log "Phonebook not found, copying example."
+  cp "${INSTALL_DIR}/ric_phonebook.example.yaml" "${CONFIG_DIR}/ric_phonebook.yaml"
+fi
 chown -R "${SERVICE_USER}:${SERVICE_USER}" "${CONFIG_DIR}"
 chmod 600 "${CONFIG_DIR}/config.yaml"
+if [[ -f "${CONFIG_DIR}/ric_phonebook.yaml" ]]; then
+  chmod 640 "${CONFIG_DIR}/ric_phonebook.yaml"
+fi
 
 log "Setting up log file ${LOG_FILE}."
 mkdir -p "$(dirname "${LOG_FILE}")"

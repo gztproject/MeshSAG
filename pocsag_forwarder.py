@@ -100,6 +100,58 @@ def _get_json(env_name: str, cfg: Optional[Dict[str, Any]], key: str, default: D
     return default
 
 
+def _resolve_path(path: str, base_dir: Optional[str]) -> str:
+    if not path:
+        return path
+    if os.path.isabs(path) or not base_dir:
+        return path
+    return os.path.join(base_dir, path)
+
+
+def _load_yaml_file(path: str) -> Any:
+    with open(path, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f)
+
+
+def _load_config(path: str) -> Dict[str, Any]:
+    data = _load_yaml_file(path) or {}
+    if not isinstance(data, dict):
+        return {}
+    return data
+
+
+def _load_mapping_file(path: str, label: str) -> Dict[str, Any]:
+    try:
+        data = _load_yaml_file(path) or {}
+    except FileNotFoundError:
+        logging.warning("%s file not found: %s", label, path)
+        return {}
+    except Exception as exc:  # noqa: BLE001
+        logging.warning("Failed to load %s file %s: %s", label, path, exc)
+        return {}
+    if not isinstance(data, dict):
+        logging.warning("%s file %s must be a mapping", label, path)
+        return {}
+    return data
+
+
+def _merge_ric_phonebook(config: Dict[str, Any], base_dir: Optional[str]) -> Dict[str, Any]:
+    phonebook = config.get("ric_phonebook", {})
+    if not isinstance(phonebook, dict):
+        phonebook = {}
+
+    phonebook_path = config.get("ric_phonebook_file") or config.get("ric_phonebook_path")
+    if phonebook_path is None or str(phonebook_path).strip() == "":
+        config["ric_phonebook"] = phonebook
+        return config
+
+    resolved = _resolve_path(str(phonebook_path), base_dir)
+    loaded = _load_mapping_file(resolved, "RIC phonebook")
+    merged = {**loaded, **phonebook}
+    config["ric_phonebook"] = merged
+    return config
+
+
 def _redact_config(data: Any) -> Any:
     sensitive_keys = {
         "password",
@@ -215,6 +267,7 @@ class RoutingConfig:
         channel_filters: List[Dict[str, Any]],
         ric_to_user: Dict[str, str],
         global_exclude_rics: List[Any],
+        ric_phonebook: Optional[Dict[str, str]] = None,
     ):
         self.channel_filters = []
         for entry in channel_filters:
@@ -243,6 +296,15 @@ class RoutingConfig:
             _, key = _normalize_ric(k)
             self.ric_to_user[key] = str(v).strip()
 
+        self.ric_phonebook = {}
+        if isinstance(ric_phonebook, dict):
+            for k, v in ric_phonebook.items():
+                _, key = _normalize_ric(k)
+                label = str(v).strip() if v is not None else ""
+                if not key or not label:
+                    continue
+                self.ric_phonebook[key] = label
+
         self.exclude_singles, self.exclude_ranges = _compile_rics(global_exclude_rics or [])
 
     @staticmethod
@@ -250,20 +312,22 @@ class RoutingConfig:
         channel_filters = data.get("channel_filters", [])
         ric_to_user = data.get("ric_to_user", {})
         exclude_rics = data.get("exclude_rics", [])
+        ric_phonebook = data.get("ric_phonebook", {})
         if not isinstance(channel_filters, list):
             channel_filters = []
         if not isinstance(ric_to_user, dict):
             ric_to_user = {}
         if not isinstance(exclude_rics, list):
             exclude_rics = []
-        return RoutingConfig(channel_filters, ric_to_user, exclude_rics)
+        if not isinstance(ric_phonebook, dict):
+            ric_phonebook = {}
+        return RoutingConfig(channel_filters, ric_to_user, exclude_rics, ric_phonebook)
 
     @staticmethod
     def load(path: str) -> "RoutingConfig":
-        with open(path, "r", encoding="utf-8") as f:
-            data = yaml.safe_load(f) or {}
-        if not isinstance(data, dict):
-            data = {}
+        data = _load_config(path)
+        base_dir = os.path.dirname(os.path.abspath(path))
+        data = _merge_ric_phonebook(data, base_dir)
         return RoutingConfig.from_dict(data)
 
     def route(self, ric_key: str, ric_int: Optional[int]) -> Optional[Tuple[str, Any]]:
@@ -475,6 +539,7 @@ class Forwarder:
         self.message_prefix = _get_str("MM_MESSAGE_PREFIX", message_cfg, "message_prefix", "") or ""
         self.message_suffix = _get_str("MM_MESSAGE_SUFFIX", message_cfg, "message_suffix", "") or ""
         self.include_ric = _get_bool("MM_INCLUDE_RIC", message_cfg, "include_ric", False)
+        self.include_ric_name = _get_bool("MM_INCLUDE_RIC_NAME", message_cfg, "include_ric_name", False)
         self.include_timestamp = _get_bool("MM_INCLUDE_TIMESTAMP", message_cfg, "include_timestamp", False)
 
         self.dedupe = DedupeCache(dedupe_cfg or {})
@@ -520,18 +585,36 @@ class Forwarder:
             return
 
         text = str(message)
-        parts = []
-        if self.message_prefix:
-            parts.append(self.message_prefix)
-        if text:
-            parts.append(text)
-        if self.include_ric:
-            parts.append(f"[RIC {ric_key}]")
-        if self.include_timestamp and timestamp is not None:
-            parts.append(f"[TS {timestamp}]")
-        if self.message_suffix:
-            parts.append(self.message_suffix)
-        text = " ".join(p for p in parts if p)
+        ric_label = self.routing.ric_phonebook.get(ric_key)
+        include_ric_label = self.include_ric_name and bool(ric_label)
+
+        def build_text(use_ric_label: bool) -> str:
+            parts = []
+            if self.message_prefix:
+                parts.append(self.message_prefix)
+            if text:
+                parts.append(text)
+            if self.include_ric:
+                if use_ric_label and ric_label:
+                    parts.append(f"[RIC {ric_key} {ric_label}]")
+                else:
+                    parts.append(f"[RIC {ric_key}]")
+            elif use_ric_label and ric_label:
+                parts.append(f"[RIC_NAME {ric_label}]")
+            if self.include_timestamp and timestamp is not None:
+                parts.append(f"[TS {timestamp}]")
+            if self.message_suffix:
+                parts.append(self.message_suffix)
+            return " ".join(p for p in parts if p)
+
+        if include_ric_label and self.max_len > 0:
+            text_with_label = build_text(True)
+            if len(text_with_label) <= self.max_len:
+                text = text_with_label
+            else:
+                text = build_text(False)
+        else:
+            text = build_text(include_ric_label)
         if self.max_len > 0 and len(text) > self.max_len:
             text = text[: self.max_len]
 
@@ -581,10 +664,7 @@ def _setup_logging(runtime_cfg: Optional[Dict[str, Any]] = None) -> None:
 
 def main() -> None:
     config_path = os.getenv("CONFIG_PATH", "config.yaml")
-    with open(config_path, "r", encoding="utf-8") as f:
-        config_data = yaml.safe_load(f) or {}
-    if not isinstance(config_data, dict):
-        config_data = {}
+    config_data = _load_config(config_path)
 
     runtime_cfg = config_data.get("runtime", {})
     mqtt_cfg = config_data.get("mqtt", {})
@@ -592,6 +672,8 @@ def main() -> None:
     dedupe_cfg = config_data.get("dedupe", {})
 
     _setup_logging(runtime_cfg)
+    config_dir = os.path.dirname(os.path.abspath(config_path))
+    config_data = _merge_ric_phonebook(config_data, config_dir)
     logging.info("=== MeshSAG starting ===")
     logging.info("Config path: %s", config_path)
     try:

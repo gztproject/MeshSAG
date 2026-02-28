@@ -7,6 +7,7 @@ if [[ "$(id -u)" -ne 0 ]]; then
 fi
 
 INSTALL_DIR="${INSTALL_DIR:-/opt/meshsag}"
+CONFIG_DIR="${CONFIG_DIR:-/etc/meshsag}"
 SERVICE_NAME="${SERVICE_NAME:-meshsag}"
 SERVICE_USER="${SERVICE_USER:-meshsag}"
 
@@ -16,6 +17,7 @@ log() {
 
 log "Starting update."
 log "INSTALL_DIR=${INSTALL_DIR}"
+log "CONFIG_DIR=${CONFIG_DIR}"
 log "SERVICE_NAME=${SERVICE_NAME}"
 log "SERVICE_USER=${SERVICE_USER}"
 
@@ -34,6 +36,18 @@ fi
 if [[ -x "${INSTALL_DIR}/.venv/bin/pip" ]]; then
   log "Updating Python dependencies."
   "${INSTALL_DIR}/.venv/bin/pip" install -r "${INSTALL_DIR}/requirements.txt"
+fi
+
+if [[ -f "${CONFIG_DIR}/config.yaml" ]]; then
+  phonebook_path="$(awk -F: '/^[[:space:]]*ric_phonebook_file:[[:space:]]*/ {print $2; exit}' "${CONFIG_DIR}/config.yaml" | sed 's/#.*$//' | xargs || true)"
+  if [[ -n "${phonebook_path}" ]]; then
+    if [[ "${phonebook_path}" != /* ]]; then
+      phonebook_path="${CONFIG_DIR}/${phonebook_path}"
+    fi
+    if [[ ! -f "${phonebook_path}" ]]; then
+      log "WARNING: ric_phonebook_file is set but missing: ${phonebook_path}"
+    fi
+  fi
 fi
 
 log "Restarting service ${SERVICE_NAME}."
