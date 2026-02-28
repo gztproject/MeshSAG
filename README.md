@@ -67,7 +67,7 @@ MeshMonitor v2 provides an API with token auth and Swagger docs at `/api/v1/docs
    - `DEDUPE_ENABLED`, `DEDUPE_WINDOW_SECONDS`, `DEDUPE_BACKEND`, `DEDUPE_KEY_PREFIX`
    - `REDIS_URL` or `REDIS_HOST`, `REDIS_PORT`, `REDIS_DB`, `REDIS_PASSWORD`, `REDIS_TLS`
    - `LOG_FILE`
-   - `QUEUE_MAX`, `MAX_MESSAGE_LEN`, `LOG_LEVEL`
+   - `QUEUE_MAX`, `MAX_MESSAGE_LEN`, `SEND_DELAY_SECONDS`, `LOG_LEVEL`
 4. Run:
    - `python pocsag_forwarder.py`
 

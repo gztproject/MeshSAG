@@ -32,6 +32,7 @@ runtime:
   log_file: /var/log/meshsag.log
   queue_max: 1000
   max_message_len: 233
+  send_delay_seconds: 5
 
 dedupe:
   enabled: false

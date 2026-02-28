@@ -536,6 +536,7 @@ class Forwarder:
         self.worker = threading.Thread(target=self._worker, name="forwarder-worker", daemon=True)
 
         self.max_len = _get_int("MAX_MESSAGE_LEN", runtime_cfg, "max_message_len", 0)
+        self.send_delay_seconds = _get_float("SEND_DELAY_SECONDS", runtime_cfg, "send_delay_seconds", 5.0)
         self.message_prefix = _get_str("MM_MESSAGE_PREFIX", message_cfg, "message_prefix", "") or ""
         self.message_suffix = _get_str("MM_MESSAGE_SUFFIX", message_cfg, "message_suffix", "") or ""
         self.include_ric = _get_bool("MM_INCLUDE_RIC", message_cfg, "include_ric", False)
@@ -629,6 +630,8 @@ class Forwarder:
                 logging.info("Forwarded RIC %s to %s=%s", ric_key, kind, dest)
             except Exception as exc:  # noqa: BLE001
                 logging.exception("Failed to send RIC %s to %s=%s: %s", ric_key, kind, dest, exc)
+            if self.send_delay_seconds > 0:
+                time.sleep(self.send_delay_seconds)
 
     @staticmethod
     def _dedupe_key(kind: str, dest: Any, ric_key: str, text: str) -> str:
