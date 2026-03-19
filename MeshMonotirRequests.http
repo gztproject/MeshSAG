@@ -1,0 +1,42 @@
+# MeshMonitor API smoke tests for this project.
+# Update these variables to match your MeshMonitor instance and routing config.
+
+@baseUrl = http://localhost:8080
+@sendPath = /api/v1/messages
+@apiToken = replace-with-token
+@channel = 0
+@toNodeId = ALPHA
+@message = MeshSAG HTTP test message
+
+###
+# Swagger UI / API docs
+GET {{baseUrl}}/api/v1/docs
+Accept: text/html
+
+###
+# Channel send using the default MeshSAG field mapping.
+POST {{baseUrl}}{{sendPath}}
+Authorization: Bearer {{apiToken}}
+Content-Type: application/json
+Accept: application/json
+
+{
+  "text": "{{message}}",
+  "channel": {{channel}}
+}
+
+###
+# Direct message using the default MeshSAG field mapping.
+POST {{baseUrl}}{{sendPath}}
+Authorization: Bearer {{apiToken}}
+Content-Type: application/json
+Accept: application/json
+
+{
+  "text": "{{message}}",
+  "toNodeId": "{{toNodeId}}"
+}
+
+###
+# If you changed MeshSAG field names via MM_MESSAGE_FIELD / MM_CHANNEL_FIELD / MM_USER_FIELD,
+# adapt the JSON keys in the two POST requests above before using this file.
