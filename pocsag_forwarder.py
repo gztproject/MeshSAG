@@ -519,17 +519,71 @@ class MeshMonitorSender:
             raise RuntimeError(f"MeshMonitor send failed: {resp.status_code} {resp.text}")
 
 
+class PagerPhonebookResolver:
+    def __init__(self, cfg: Optional[Dict[str, Any]] = None) -> None:
+        self.enabled = _get_bool("PAGER_PHONEBOOK_API_ENABLED", cfg, "enabled", False)
+        self.base_url = (_get_str("PAGER_PHONEBOOK_API_BASE_URL", cfg, "base_url", "") or "").rstrip("/")
+        self.api_token = (_get_str("PAGER_PHONEBOOK_API_TOKEN", cfg, "api_token", "") or "").strip()
+        self.timeout = _get_float("PAGER_PHONEBOOK_API_TIMEOUT", cfg, "timeout", 5.0)
+        self.verify_tls = _get_bool("PAGER_PHONEBOOK_API_VERIFY_TLS", cfg, "verify_tls", True)
+        self.path_template = _get_str("PAGER_PHONEBOOK_API_PATH", cfg, "path", "/api/phonebook/{ric}") or "/api/phonebook/{ric}"
+        self.prefer_long_name = _get_bool("PAGER_PHONEBOOK_API_PREFER_LONG_NAME", cfg, "prefer_long_name", True)
+        self._cache: Dict[str, Optional[str]] = {}
+
+    def resolve(self, ric_key: str) -> Optional[str]:
+        if not ric_key:
+            return None
+        if ric_key in self._cache:
+            return self._cache[ric_key]
+        label = self._fetch_label(ric_key)
+        self._cache[ric_key] = label
+        return label
+
+    def _fetch_label(self, ric_key: str) -> Optional[str]:
+        if not self.enabled or not self.base_url:
+            return None
+        url = f"{self.base_url}{self.path_template.format(ric=ric_key)}"
+        headers = {}
+        if self.api_token:
+            headers["Authorization"] = f"Bearer {self.api_token}"
+        try:
+            resp = requests.get(url, headers=headers, timeout=self.timeout, verify=self.verify_tls)
+        except Exception as exc:  # noqa: BLE001
+            logging.debug("Pager phonebook lookup failed for RIC %s: %s", ric_key, exc)
+            return None
+
+        if resp.status_code == 404:
+            return None
+        if not resp.ok:
+            logging.debug("Pager phonebook lookup failed for RIC %s: %s %s", ric_key, resp.status_code, resp.text)
+            return None
+        try:
+            payload = resp.json()
+        except Exception as exc:  # noqa: BLE001
+            logging.debug("Pager phonebook returned invalid JSON for RIC %s: %s", ric_key, exc)
+            return None
+        if not isinstance(payload, dict):
+            return None
+        if self.prefer_long_name:
+            label = str(payload.get("long_name") or payload.get("short_name") or "").strip()
+        else:
+            label = str(payload.get("short_name") or payload.get("long_name") or "").strip()
+        return label or None
+
+
 class Forwarder:
     def __init__(
         self,
         routing: RoutingConfig,
         sender: MeshMonitorSender,
+        phonebook_resolver: Optional[PagerPhonebookResolver] = None,
         runtime_cfg: Optional[Dict[str, Any]] = None,
         message_cfg: Optional[Dict[str, Any]] = None,
         dedupe_cfg: Optional[Dict[str, Any]] = None,
     ) -> None:
         self.routing = routing
         self.sender = sender
+        self.phonebook_resolver = phonebook_resolver
         queue_max = _get_int("QUEUE_MAX", runtime_cfg, "queue_max", 1000)
         self.queue: "queue.Queue[Dict[str, Any]]" = queue.Queue(maxsize=queue_max)
         self.stop_event = threading.Event()
@@ -586,7 +640,11 @@ class Forwarder:
             return
 
         text = str(message)
-        ric_label = self.routing.ric_phonebook.get(ric_key)
+        ric_label = None
+        if self.phonebook_resolver is not None:
+            ric_label = self.phonebook_resolver.resolve(ric_key)
+        if not ric_label:
+            ric_label = self.routing.ric_phonebook.get(ric_key)
         include_ric_label = self.include_ric_name and bool(ric_label)
 
         def build_text(use_ric_label: bool) -> str:
@@ -672,6 +730,7 @@ def main() -> None:
     runtime_cfg = config_data.get("runtime", {})
     mqtt_cfg = config_data.get("mqtt", {})
     mesh_cfg = config_data.get("meshmonitor", {})
+    pager_phonebook_api_cfg = config_data.get("pager_phonebook_api", {})
     dedupe_cfg = config_data.get("dedupe", {})
 
     _setup_logging(runtime_cfg)
@@ -698,7 +757,8 @@ def main() -> None:
                 entry["exclude_ranges"],
             )
     sender = MeshMonitorSender(mesh_cfg)
-    forwarder = Forwarder(routing, sender, runtime_cfg, mesh_cfg, dedupe_cfg)
+    pager_phonebook_resolver = PagerPhonebookResolver(pager_phonebook_api_cfg)
+    forwarder = Forwarder(routing, sender, pager_phonebook_resolver, runtime_cfg, mesh_cfg, dedupe_cfg)
     forwarder.start()
 
     mqtt_host = _get_str("MQTT_HOST", mqtt_cfg, "host", "localhost")

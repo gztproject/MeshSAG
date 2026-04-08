@@ -47,6 +47,15 @@ dedupe:
   redis_password: ""
   redis_tls: false
 
+pager_phonebook_api:
+  enabled: false
+  base_url: http://localhost:8000
+  path: /api/phonebook/{ric}
+  api_token: ""
+  timeout: 5
+  verify_tls: true
+  prefer_long_name: true
+
 channel_filters:
   - channel: 0
     rics:

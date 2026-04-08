@@ -64,6 +64,9 @@ MeshMonitor v2 provides an API with token auth and Swagger docs at `/api/v1/docs
    - `MM_MESSAGE_FIELD`, `MM_CHANNEL_FIELD`, `MM_USER_FIELD`
    - `MM_MESSAGE_PREFIX`, `MM_MESSAGE_SUFFIX`
    - `MM_EXTRA_JSON`, `MM_INCLUDE_RIC`, `MM_INCLUDE_RIC_NAME`, `MM_INCLUDE_TIMESTAMP`
+- `PAGER_PHONEBOOK_API_ENABLED`, `PAGER_PHONEBOOK_API_BASE_URL`, `PAGER_PHONEBOOK_API_PATH`
+- `PAGER_PHONEBOOK_API_TOKEN`, `PAGER_PHONEBOOK_API_TIMEOUT`, `PAGER_PHONEBOOK_API_VERIFY_TLS`
+- `PAGER_PHONEBOOK_API_PREFER_LONG_NAME`
    - `DEDUPE_ENABLED`, `DEDUPE_WINDOW_SECONDS`, `DEDUPE_BACKEND`, `DEDUPE_KEY_PREFIX`
    - `REDIS_URL` or `REDIS_HOST`, `REDIS_PORT`, `REDIS_DB`, `REDIS_PASSWORD`, `REDIS_TLS`
    - `LOG_FILE`
@@ -112,6 +115,20 @@ ric_phonebook_file: ric_phonebook.yaml
 ric_phonebook:
   123498: "DISPATCH"
 ```
+
+Pager API phonebook lookup (preferred before YAML fallback):
+```yaml
+pager_phonebook_api:
+  enabled: true
+  base_url: http://pager.local:8000
+  path: /api/phonebook/{ric}
+  api_token: your_read_token
+  timeout: 5
+  verify_tls: true
+  prefer_long_name: true
+```
+
+When enabled, the forwarder queries `GET /api/phonebook/{ric}` first and uses `long_name` (or `short_name`) for RIC tags. If the lookup fails, returns 404, or has no usable name, it falls back to `ric_phonebook_file` / `ric_phonebook`.
 
 Example output text when `include_ric: true` and `include_ric_name: true`:
 ```
