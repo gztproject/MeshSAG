@@ -2,7 +2,11 @@
 # Update these variables to match your MeshMonitor instance and routing config.
 
 @baseUrl = http://localhost:8080
-@sendPath = /api/v1/messages
+@sourceId = default
+# New (4.13+ / api_style: sources) — default for MeshSAG:
+@sendPath = /api/v1/sources/{{sourceId}}/messages
+# Legacy (pre-4.14 / api_style: legacy):
+# @sendPath = /api/v1/messages
 @apiToken = replace-with-token
 @channel = 0
 @toNodeId = ALPHA
@@ -12,6 +16,12 @@
 # Swagger UI / API docs
 GET {{baseUrl}}/api/v1/docs
 Accept: text/html
+
+###
+# List sources (useful when picking sourceId)
+GET {{baseUrl}}/api/v1/sources
+Authorization: Bearer {{apiToken}}
+Accept: application/json
 
 ###
 # Channel send using the default MeshSAG field mapping.

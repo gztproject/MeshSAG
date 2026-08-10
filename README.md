@@ -15,7 +15,7 @@ Listens to POCSAG JSON messages on MQTT and forwards matched RICs to MeshMonitor
   - `exclude_rics`: list of RICs or ranges to suppress entirely.
   - Per-channel exclusions: prefix a RIC or range with `!` inside `rics` (quote the value so YAML doesn't treat `!` as a tag).
 
-MeshMonitor v2 provides an API with token auth and Swagger docs at `/api/v1/docs` on your instance. The release notes also mention a `POST /api/v1/messages` endpoint for programmatic sends.
+MeshMonitor provides an API with token auth and Swagger docs at `/api/v1/docs` on your instance. As of MeshMonitor 4.13, message sends use the per-source path `POST /api/v1/sources/{sourceId}/messages` (use `default` for the primary source). The older root path `POST /api/v1/messages` was removed in 4.14.
 
 ## Files
 - `pocsag_forwarder.py`
@@ -43,6 +43,8 @@ MeshMonitor v2 provides an API with token auth and Swagger docs at `/api/v1/docs
    meshmonitor:
      base_url: http://localhost:8080
      api_token: your_token_here
+     api_style: sources   # sources (default, 4.13+) or legacy (pre-4.14)
+     source_id: default   # used when api_style is sources
      # message_prefix, message_suffix, include_ric, include_timestamp also supported
 
    runtime:
@@ -60,6 +62,7 @@ MeshMonitor v2 provides an API with token auth and Swagger docs at `/api/v1/docs
    - `MQTT_USERNAME`, `MQTT_PASSWORD`
    - `MQTT_TLS=true`, `MQTT_CA_CERT`, `MQTT_CLIENT_CERT`, `MQTT_CLIENT_KEY`
    - `MESHMONITOR_BASE_URL`, `MESHMONITOR_API_TOKEN`, `MESHMONITOR_SEND_PATH`
+   - `MESHMONITOR_API_STYLE`, `MESHMONITOR_SOURCE_ID`
    - `MESHMONITOR_TIMEOUT`, `MESHMONITOR_VERIFY_TLS`
    - `MM_MESSAGE_FIELD`, `MM_CHANNEL_FIELD`, `MM_USER_FIELD`
    - `MM_MESSAGE_PREFIX`, `MM_MESSAGE_SUFFIX`
@@ -75,9 +78,11 @@ MeshMonitor v2 provides an API with token auth and Swagger docs at `/api/v1/docs
    - `python pocsag_forwarder.py`
 
 ## MeshMonitor request mapping
-By default, the sender posts to `/api/v1/messages` with JSON:
+By default (`api_style: sources`), the sender posts to `/api/v1/sources/{source_id}/messages` with JSON:
 - channel: `{ "text": "...", "channel": <channel> }`
 - user: `{ "text": "...", "toNodeId": "<shortName>" }`
+
+Set `api_style: legacy` (or `MESHMONITOR_API_STYLE=legacy`) to use the old `/api/v1/messages` path on MeshMonitor versions before 4.14. `source_id` (default `default`) selects the mesh source for the new path. An explicit `send_path` / `MESHMONITOR_SEND_PATH` overrides the path built from `api_style` and `source_id`.
 
 If your MeshMonitor API expects different field names or extra params, adjust via env:
 - `MM_MESSAGE_FIELD` (default `text`)

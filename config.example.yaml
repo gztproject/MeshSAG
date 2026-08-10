@@ -13,7 +13,12 @@ mqtt:
 
 meshmonitor:
   base_url: http://localhost:8080
-  send_path: /api/v1/messages
+  # sources = MeshMonitor 4.13+ (/api/v1/sources/{source_id}/messages)
+  # legacy  = pre-4.14 root path (/api/v1/messages)
+  api_style: sources
+  source_id: default
+  # Optional absolute path override (skips api_style/source_id path building):
+  # send_path: /api/v1/sources/default/messages
   api_token: ""
   timeout: 10
   verify_tls: true

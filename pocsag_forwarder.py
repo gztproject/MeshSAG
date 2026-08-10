@@ -9,7 +9,7 @@ import signal
 import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import requests
 import yaml
@@ -487,9 +487,18 @@ class DedupeCache:
 
 
 class MeshMonitorSender:
+    # MeshMonitor 4.13+ canonical path: /api/v1/sources/{sourceId}/messages
+    # Legacy root path (removed in 4.14): /api/v1/messages
+    API_STYLE_SOURCES = "sources"
+    API_STYLE_LEGACY = "legacy"
+
     def __init__(self, cfg: Optional[Dict[str, Any]] = None) -> None:
         self.base_url = _get_str("MESHMONITOR_BASE_URL", cfg, "base_url", "http://localhost:8080").rstrip("/")
-        self.send_path = _get_str("MESHMONITOR_SEND_PATH", cfg, "send_path", "/api/v1/messages")
+        self.api_style = self._normalize_api_style(
+            _get_str("MESHMONITOR_API_STYLE", cfg, "api_style", self.API_STYLE_SOURCES)
+        )
+        self.source_id = (_get_str("MESHMONITOR_SOURCE_ID", cfg, "source_id", "default") or "default").strip()
+        self.send_path = self._resolve_send_path(cfg)
         self.api_token = (_get_str("MESHMONITOR_API_TOKEN", cfg, "api_token", "") or "").strip()
         self.timeout = _get_float("MESHMONITOR_TIMEOUT", cfg, "timeout", 10.0)
         self.verify_tls = _get_bool("MESHMONITOR_VERIFY_TLS", cfg, "verify_tls", True)
@@ -499,6 +508,50 @@ class MeshMonitorSender:
         self.user_field = _get_str("MM_USER_FIELD", cfg, "user_field", "toNodeId")
 
         self.extra_fields = _get_json("MM_EXTRA_JSON", cfg, "extra_json", {})
+
+    @classmethod
+    def _normalize_api_style(cls, value: Optional[str]) -> str:
+        style = (value or cls.API_STYLE_SOURCES).strip().lower()
+        if style in {cls.API_STYLE_SOURCES, "source", "v1-sources", "per-source"}:
+            return cls.API_STYLE_SOURCES
+        if style in {cls.API_STYLE_LEGACY, "root", "old", "v1-root"}:
+            return cls.API_STYLE_LEGACY
+        logging.warning("Unknown meshmonitor.api_style %r; using %s", value, cls.API_STYLE_SOURCES)
+        return cls.API_STYLE_SOURCES
+
+    def _default_send_path(self) -> str:
+        if self.api_style == self.API_STYLE_LEGACY:
+            return "/api/v1/messages"
+        # Quote source_id so odd IDs remain safe in the URL path.
+        source = quote(self.source_id, safe="")
+        return f"/api/v1/sources/{source}/messages"
+
+    def _resolve_send_path(self, cfg: Optional[Dict[str, Any]]) -> str:
+        # Explicit send_path / env override wins for custom MeshMonitor deployments.
+        env_val = os.getenv("MESHMONITOR_SEND_PATH")
+        if env_val is not None and env_val.strip():
+            path = env_val.strip()
+        else:
+            cfg_val = _cfg_get(cfg, "send_path", None)
+            if cfg_val is not None and str(cfg_val).strip():
+                path = str(cfg_val).strip()
+            else:
+                return self._default_send_path()
+
+        # Old config.example shipped send_path=/api/v1/messages. With api_style=sources
+        # (the default), rewrite that leftover to the per-source path so MeshMonitor 4.14+ works.
+        if (
+            self.api_style == self.API_STYLE_SOURCES
+            and path.rstrip("/") == "/api/v1/messages"
+        ):
+            rewritten = self._default_send_path()
+            logging.warning(
+                "Ignoring legacy meshmonitor.send_path=/api/v1/messages because "
+                "api_style=sources; using %s (set api_style=legacy to keep the root path)",
+                rewritten,
+            )
+            return rewritten
+        return path
 
     def send(self, kind: str, dest: Any, message: str, ric_key: str, timestamp: Any) -> None:
         url = f"{self.base_url}{self.send_path}"
@@ -757,6 +810,12 @@ def main() -> None:
                 entry["exclude_ranges"],
             )
     sender = MeshMonitorSender(mesh_cfg)
+    logging.info(
+        "MeshMonitor API: style=%s source_id=%s send_path=%s",
+        sender.api_style,
+        sender.source_id,
+        sender.send_path,
+    )
     pager_phonebook_resolver = PagerPhonebookResolver(pager_phonebook_api_cfg)
     forwarder = Forwarder(routing, sender, pager_phonebook_resolver, runtime_cfg, mesh_cfg, dedupe_cfg)
     forwarder.start()
