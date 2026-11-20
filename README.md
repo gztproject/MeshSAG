@@ -26,6 +26,8 @@ MeshMonitor provides an API with token auth and Swagger docs at `/api/v1/docs` o
 ## Setup
 1. Create config:
    - Copy `config.example.yaml` to `config.yaml` and edit.
+   - It holds credentials, so keep it private: `chmod 600 config.yaml`.
+   - The service install below does not copy `config.yaml`, `*.http`, or `.env` files from this tree; the service reads `/etc/meshsag/config.yaml`.
 2. Install deps:
    - `python3 -m venv .venv`
    - `. .venv/bin/activate`
@@ -151,15 +153,19 @@ Recommended for servers. This repo includes a unit file at `systemd/meshsag.serv
 
 1. Create a service user:
    - `sudo useradd --system --no-create-home --shell /usr/sbin/nologin meshsag`
-2. Install the repo and deps:
+2. Install the repo and deps (local secret files are excluded and the install dir is closed to other accounts):
    - `sudo mkdir -p /opt/meshsag`
-   - `sudo rsync -a ./ /opt/meshsag/`
+   - `sudo chown root:meshsag /opt/meshsag`
+   - `sudo chmod 750 /opt/meshsag`
+   - `sudo rsync -a --chown=root:meshsag --chmod=D750,Fg+rX,Fg-w,Fo-rwx --exclude=config.yaml --exclude='*.http' --exclude=.env --exclude='*.env' ./ /opt/meshsag/`
+   - `sudo find /opt/meshsag -path /opt/meshsag/.venv -prune -o -type f \( -name config.yaml -o -name '*.http' -o -name .env -o -name '*.env' \) -exec rm -f {} +`
    - `sudo python3 -m venv /opt/meshsag/.venv`
    - `sudo /opt/meshsag/.venv/bin/pip install -r /opt/meshsag/requirements.txt`
 3. Place config:
    - `sudo mkdir -p /etc/meshsag`
    - `sudo cp /opt/meshsag/config.example.yaml /etc/meshsag/config.yaml`
    - `sudo chown -R meshsag:meshsag /etc/meshsag`
+   - `sudo chmod 750 /etc/meshsag`
    - `sudo chmod 600 /etc/meshsag/config.yaml`
    - `sudo touch /var/log/meshsag.log`
    - `sudo chown meshsag:meshsag /var/log/meshsag.log`

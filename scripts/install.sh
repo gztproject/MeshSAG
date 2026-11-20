@@ -33,9 +33,30 @@ else
   log "Service user ${SERVICE_USER} exists."
 fi
 
+# Operator-local files that hold credentials. The service reads its config
+# from CONFIG_DIR, so these never belong in INSTALL_DIR.
+LOCAL_SECRET_PATTERNS=(config.yaml '*.http' .env '*.env')
+
 log "Syncing repo to ${INSTALL_DIR}."
+# Restrict the install dir before anything is copied into it so no file is
+# ever reachable by other local accounts, whatever its own mode.
 mkdir -p "${INSTALL_DIR}"
-rsync -a "${ROOT_DIR}/" "${INSTALL_DIR}/"
+chown root:"${SERVICE_USER}" "${INSTALL_DIR}"
+chmod 750 "${INSTALL_DIR}"
+rsync_excludes=()
+for pattern in "${LOCAL_SECRET_PATTERNS[@]}"; do
+  rsync_excludes+=("--exclude=${pattern}")
+done
+rsync -a --chown="root:${SERVICE_USER}" --chmod=D750,Fg+rX,Fg-w,Fo-rwx "${rsync_excludes[@]}" \
+  "${ROOT_DIR}/" "${INSTALL_DIR}/"
+
+log "Removing local secret files left in ${INSTALL_DIR} by earlier installs."
+find_names=()
+for pattern in "${LOCAL_SECRET_PATTERNS[@]}"; do
+  find_names+=(${find_names[@]:+-o} -name "${pattern}")
+done
+find "${INSTALL_DIR}" -path "${INSTALL_DIR}/.venv" -prune -o \
+  -type f \( "${find_names[@]}" \) -print -exec rm -f {} +
 
 log "Setting up virtualenv."
 python3 -m venv "${INSTALL_DIR}/.venv"
@@ -57,6 +78,7 @@ if [[ -f "${INSTALL_DIR}/ric_phonebook.example.yaml" && ! -f "${CONFIG_DIR}/ric_
   cp "${INSTALL_DIR}/ric_phonebook.example.yaml" "${CONFIG_DIR}/ric_phonebook.yaml"
 fi
 chown -R "${SERVICE_USER}:${SERVICE_USER}" "${CONFIG_DIR}"
+chmod 750 "${CONFIG_DIR}"
 chmod 600 "${CONFIG_DIR}/config.yaml"
 if [[ -f "${CONFIG_DIR}/ric_phonebook.yaml" ]]; then
   chmod 640 "${CONFIG_DIR}/ric_phonebook.yaml"
