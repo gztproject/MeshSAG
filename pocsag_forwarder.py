@@ -5,11 +5,12 @@ import logging
 import logging.handlers
 import os
 import queue
+import re
 import signal
 import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import quote, urlparse
+from urllib.parse import quote, unquote_plus, urlparse
 
 import requests
 import yaml
@@ -152,6 +153,81 @@ def _merge_ric_phonebook(config: Dict[str, Any], base_dir: Optional[str]) -> Dic
     return config
 
 
+_REDACTED = "***REDACTED***"
+
+_URL_SCHEME_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.\-]*://")
+_URL_PARAM_NAME = r"(?<![^?&#;\s'\"(,{\[])([A-Za-z0-9_.\-%+\[\]]+)="
+_URL_PARAM_RE = re.compile(_URL_PARAM_NAME + r"([^&#\s'\"]*)")
+_URL_PARAM_UNBOUNDED_RE = re.compile(_URL_PARAM_NAME + r"([^&#]*)")
+
+_CREDENTIAL_PARAM_NAMES = {
+    "password",
+    "passwd",
+    "pass",
+    "pwd",
+    "token",
+    "secret",
+    "key",
+    "apikey",
+    "api_key",
+    "auth",
+    "authorization",
+    "sig",
+    "signature",
+    "credential",
+    "credentials",
+}
+_CREDENTIAL_PARAM_FRAGMENTS = ("password", "passwd", "token", "secret", "apikey", "api_key", "credential")
+_CREDENTIAL_PARAM_SUFFIXES = ("_key", "_pass", "_pwd", "_auth", "_sig", "_signature")
+
+
+def _is_credential_param(name: str) -> bool:
+    try:
+        normalized = unquote_plus(name)
+    except Exception:  # noqa: BLE001
+        return True
+    normalized = re.sub(r"[\s\-.]+", "_", normalized.strip().lower())
+    if normalized in _CREDENTIAL_PARAM_NAMES:
+        return True
+    if any(fragment in normalized for fragment in _CREDENTIAL_PARAM_FRAGMENTS):
+        return True
+    return normalized.endswith(_CREDENTIAL_PARAM_SUFFIXES)
+
+
+def _redact_text(text: str, stop_at_whitespace: bool = True) -> str:
+    """Remove URL userinfo and credential-like query/fragment parameters from text."""
+    if "://" in text:
+        pieces: List[str] = []
+        pos = 0
+        starts = [m.end() for m in _URL_SCHEME_RE.finditer(text)]
+        for idx, authority_start in enumerate(starts):
+            segment_end = starts[idx + 1] if idx + 1 < len(starts) else len(text)
+            if stop_at_whitespace:
+                ws = re.search(r"\s", text[authority_start:segment_end])
+                if ws:
+                    segment_end = authority_start + ws.start()
+            # Passwords may contain raw '/', '?', '#' or '@', so the last '@' marks the end of userinfo.
+            at = text.rfind("@", authority_start, segment_end)
+            if at != -1:
+                pieces.append(text[pos:authority_start])
+                pieces.append(f"{_REDACTED}@")
+                pos = at + 1
+        pieces.append(text[pos:])
+        text = "".join(pieces)
+    if "=" in text:
+        param_re = _URL_PARAM_RE if stop_at_whitespace else _URL_PARAM_UNBOUNDED_RE
+        text = param_re.sub(
+            lambda m: f"{m.group(1)}={_REDACTED}" if _is_credential_param(m.group(1)) else m.group(0),
+            text,
+        )
+    return text
+
+
+class _RedactingFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        return _redact_text(super().format(record))
+
+
 def _redact_config(data: Any) -> Any:
     sensitive_keys = {
         "password",
@@ -166,6 +242,7 @@ def _redact_config(data: Any) -> Any:
         redacted: Dict[Any, Any] = {}
         for k, v in data.items():
             key = str(k).lower()
+            out_key = _redact_text(k, stop_at_whitespace=False) if isinstance(k, str) else k
             if (
                 key in sensitive_keys
                 or key.endswith("_password")
@@ -174,12 +251,14 @@ def _redact_config(data: Any) -> Any:
                 or key.endswith("_apikey")
                 or key.endswith("_api_key")
             ):
-                redacted[k] = "***REDACTED***"
+                redacted[out_key] = _REDACTED
             else:
-                redacted[k] = _redact_config(v)
+                redacted[out_key] = _redact_config(v)
         return redacted
-    if isinstance(data, list):
+    if isinstance(data, (list, tuple, set)):
         return [_redact_config(v) for v in data]
+    if isinstance(data, str):
+        return _redact_text(data, stop_at_whitespace=False)
     return data
 
 
@@ -755,7 +834,7 @@ def _setup_logging(runtime_cfg: Optional[Dict[str, Any]] = None) -> None:
     level = (level or "INFO").upper()
     log_file = _get_str("LOG_FILE", runtime_cfg, "log_file", "/var/log/meshsag.log")
 
-    formatter = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+    formatter = _RedactingFormatter("%(asctime)s %(levelname)s %(message)s")
     root = logging.getLogger()
     root.handlers.clear()
     root.setLevel(getattr(logging, level, logging.INFO))
