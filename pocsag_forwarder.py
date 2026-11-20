@@ -15,6 +15,9 @@ import requests
 import yaml
 from paho.mqtt import client as mqtt
 
+# POCSAG pages are a few hundred bytes; anything larger is dropped before decoding.
+MAX_MQTT_PAYLOAD_BYTES = 16 * 1024
+
 
 def _to_bool(value: Any, default: bool = False) -> bool:
     if value is None:
@@ -660,8 +663,18 @@ class Forwarder:
         self.worker.join(timeout=5)
 
     def enqueue(self, payload: Dict[str, Any]) -> None:
+        message = payload.get("message")
+        if message is not None:
+            message = str(message)
+            if self.max_len > 0 and len(message) > self.max_len:
+                message = message[: self.max_len]
+        item = {
+            "address": payload.get("address"),
+            "message": message,
+            "timestamp": payload.get("timestamp"),
+        }
         try:
-            self.queue.put_nowait(payload)
+            self.queue.put_nowait(item)
         except queue.Full:
             logging.warning("Queue full, dropping message")
 
@@ -847,6 +860,13 @@ def main() -> None:
             logging.error("MQTT connection failed with rc=%s", rc)
 
     def on_message(_client, _userdata, msg):
+        if len(msg.payload) > MAX_MQTT_PAYLOAD_BYTES:
+            logging.warning(
+                "MQTT payload of %d bytes exceeds %d byte limit, skipping",
+                len(msg.payload),
+                MAX_MQTT_PAYLOAD_BYTES,
+            )
+            return
         try:
             payload = json.loads(msg.payload.decode("utf-8"))
         except Exception:  # noqa: BLE001
