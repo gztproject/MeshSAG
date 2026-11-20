@@ -36,11 +36,13 @@ runtime:
   log_level: INFO
   log_file: /var/log/meshsag.log
   queue_max: 1000
+  # Unsent pages kept per RIC; a newer page for the same RIC drops the oldest one.
+  queue_max_per_address: 1
   max_message_len: 233
   send_delay_seconds: 5
 
 dedupe:
-  enabled: false
+  enabled: true
   window_seconds: 60
   backend: memory
   key_prefix: pocsag
