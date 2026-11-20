@@ -73,7 +73,7 @@ MeshMonitor provides an API with token auth and Swagger docs at `/api/v1/docs` o
    - `DEDUPE_ENABLED`, `DEDUPE_WINDOW_SECONDS`, `DEDUPE_BACKEND`, `DEDUPE_KEY_PREFIX`
    - `REDIS_URL` or `REDIS_HOST`, `REDIS_PORT`, `REDIS_DB`, `REDIS_PASSWORD`, `REDIS_TLS`
    - `LOG_FILE`
-   - `QUEUE_MAX`, `MAX_MESSAGE_LEN`, `SEND_DELAY_SECONDS`, `LOG_LEVEL`
+   - `QUEUE_MAX`, `QUEUE_MAX_PER_ADDRESS`, `MAX_MESSAGE_LEN`, `SEND_DELAY_SECONDS`, `LOG_LEVEL`
 4. Run:
    - `python pocsag_forwarder.py`
 
@@ -93,6 +93,9 @@ If your MeshMonitor API expects different field names or extra params, adjust vi
 - `MM_INCLUDE_RIC`, `MM_INCLUDE_TIMESTAMP` (append `[RIC ...]` / `[TS ...]` to message text)
 
 Note: Verify the actual payload shape for your MeshMonitor version using the Swagger UI on your server.
+
+## Send queue
+Only messages that match a route are queued. Pending pages are grouped by RIC and RICs take turns, so traffic on one RIC cannot hold back another. Each RIC keeps at most `queue_max_per_address` unsent pages (default `1`); a newer page for that RIC replaces its oldest unsent page, and the newest pending page is sent first. `queue_max` caps the total number of pending pages; when it is reached the oldest pending page is dropped, never the new one. `send_delay_seconds` is still applied after each send.
 
 ## Deduplication
 If enabled, the forwarder suppresses duplicate sends to the same destination when the same message text appears within the configured window. Keys are derived from `kind + destination + RIC + message text`. Backend can be `memory` or `redis` (optional).

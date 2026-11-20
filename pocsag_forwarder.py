@@ -8,7 +8,8 @@ import queue
 import signal
 import threading
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from collections import OrderedDict, deque
+from typing import Any, Deque, Dict, List, Optional, Tuple
 from urllib.parse import quote, urlparse
 
 import requests
@@ -624,6 +625,76 @@ class PagerPhonebookResolver:
         return label or None
 
 
+class AddressQueue:
+    """Pending pages grouped by pager address.
+
+    Each address holds at most ``per_address_max`` unsent pages; a newer page for that
+    address evicts its oldest one. Addresses are served round-robin and the newest
+    pending page of an address goes first, so a burst of pages cannot hold back a newer
+    page for the same address or pages for other addresses. Once ``maxsize`` pages are
+    pending, the oldest pending page is evicted so the new one is never discarded.
+    """
+
+    def __init__(self, maxsize: int, per_address_max: int) -> None:
+        self.maxsize = maxsize
+        self.per_address_max = max(1, per_address_max)
+        self.unfinished_tasks = 0
+        self._pending: "OrderedDict[str, Deque[Tuple[int, Any]]]" = OrderedDict()
+        self._order: "OrderedDict[int, str]" = OrderedDict()
+        self._seq = 0
+        self._cond = threading.Condition()
+
+    def qsize(self) -> int:
+        with self._cond:
+            return len(self._order)
+
+    def put(self, address: str, item: Any) -> List[Tuple[str, Any]]:
+        evicted: List[Tuple[str, Any]] = []
+        with self._cond:
+            pending = self._pending.get(address)
+            if pending is None:
+                pending = deque()
+                self._pending[address] = pending
+            while len(pending) >= self.per_address_max:
+                seq, old = pending.popleft()
+                del self._order[seq]
+                self.unfinished_tasks -= 1
+                evicted.append((address, old))
+            self._seq += 1
+            pending.append((self._seq, item))
+            self._order[self._seq] = address
+            self.unfinished_tasks += 1
+            while self.maxsize > 0 and len(self._order) > self.maxsize:
+                seq, oldest_address = self._order.popitem(last=False)
+                oldest_pending = self._pending[oldest_address]
+                _, old = oldest_pending.popleft()
+                if not oldest_pending:
+                    del self._pending[oldest_address]
+                self.unfinished_tasks -= 1
+                evicted.append((oldest_address, old))
+            self._cond.notify()
+        return evicted
+
+    def get(self, timeout: float) -> Tuple[str, Any]:
+        with self._cond:
+            if not self._cond.wait_for(lambda: bool(self._order), timeout):
+                raise queue.Empty
+            address, pending = next(iter(self._pending.items()))
+            seq, item = pending.pop()
+            del self._order[seq]
+            if pending:
+                self._pending.move_to_end(address)
+            else:
+                del self._pending[address]
+            return address, item
+
+    def task_done(self) -> None:
+        with self._cond:
+            if self.unfinished_tasks <= 0:
+                raise ValueError("task_done() called too many times")
+            self.unfinished_tasks -= 1
+
+
 class Forwarder:
     def __init__(
         self,
@@ -638,7 +709,8 @@ class Forwarder:
         self.sender = sender
         self.phonebook_resolver = phonebook_resolver
         queue_max = _get_int("QUEUE_MAX", runtime_cfg, "queue_max", 1000)
-        self.queue: "queue.Queue[Dict[str, Any]]" = queue.Queue(maxsize=queue_max)
+        queue_max_per_address = _get_int("QUEUE_MAX_PER_ADDRESS", runtime_cfg, "queue_max_per_address", 1)
+        self.queue = AddressQueue(queue_max, queue_max_per_address)
         self.stop_event = threading.Event()
         self.worker = threading.Thread(target=self._worker, name="forwarder-worker", daemon=True)
 
@@ -660,37 +732,34 @@ class Forwarder:
         self.worker.join(timeout=5)
 
     def enqueue(self, payload: Dict[str, Any]) -> None:
-        try:
-            self.queue.put_nowait(payload)
-        except queue.Full:
-            logging.warning("Queue full, dropping message")
+        ric_raw = payload.get("address")
+        if payload.get("message") is None or ric_raw is None:
+            return
+        ric_int, ric_key = _normalize_ric(ric_raw)
+        if not ric_key:
+            return
+        routes = self.routing.route_all(ric_key, ric_int)
+        if not routes:
+            return
+        for address, _ in self.queue.put(ric_key, (payload, ric_key, routes)):
+            logging.warning("Dropping older unsent page for RIC %s in favour of a newer page", address)
 
     def _worker(self) -> None:
         while not self.stop_event.is_set():
             try:
-                item = self.queue.get(timeout=0.5)
+                _, item = self.queue.get(timeout=0.5)
             except queue.Empty:
                 continue
             try:
-                self._process(item)
+                self._process(*item)
             except Exception as exc:  # noqa: BLE001
                 logging.exception("Failed to process message: %s", exc)
             finally:
                 self.queue.task_done()
 
-    def _process(self, item: Dict[str, Any]) -> None:
-        ric_raw = item.get("address")
+    def _process(self, item: Dict[str, Any], ric_key: str, routes: List[Tuple[str, Any]]) -> None:
         message = item.get("message")
         timestamp = item.get("timestamp")
-        if message is None or ric_raw is None:
-            return
-        ric_int, ric_key = _normalize_ric(ric_raw)
-        if not ric_key:
-            return
-
-        routes = self.routing.route_all(ric_key, ric_int)
-        if not routes:
-            return
 
         text = str(message)
         ric_label = None
@@ -742,7 +811,7 @@ class Forwarder:
             except Exception as exc:  # noqa: BLE001
                 logging.exception("Failed to send RIC %s to %s=%s: %s", ric_key, kind, dest, exc)
             if self.send_delay_seconds > 0:
-                time.sleep(self.send_delay_seconds)
+                self.stop_event.wait(self.send_delay_seconds)
 
     @staticmethod
     def _dedupe_key(kind: str, dest: Any, ric_key: str, text: str) -> str:
