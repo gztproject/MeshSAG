@@ -9,7 +9,7 @@ import signal
 import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import quote, urlparse
+from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlunparse
 
 import requests
 import yaml
@@ -194,6 +194,26 @@ def _redact_url(url: str) -> str:
         return f"{scheme}://{host}{path}"
     except Exception:  # noqa: BLE001
         return "<redacted>"
+
+
+_REDIS_TLS_ENFORCED_OPTIONS = {"ssl_check_hostname": True, "ssl_cert_reqs": "required"}
+
+
+def _redis_from_url(redis_module: Any, url: str, **kwargs: Any) -> Any:
+    parsed = urlparse(url)
+    if parsed.scheme == "rediss":
+        # redis-py lets URL query options override keyword arguments, so they
+        # must be removed for the enforced TLS options to take effect.
+        query = parse_qsl(parsed.query, keep_blank_values=True)
+        kept = [(k, v) for k, v in query if k not in _REDIS_TLS_ENFORCED_OPTIONS]
+        if len(kept) != len(query):
+            logging.warning(
+                "Ignoring %s in Redis URL; TLS certificate and hostname checks are always enforced",
+                ", ".join(sorted(_REDIS_TLS_ENFORCED_OPTIONS)),
+            )
+        url = urlunparse(parsed._replace(query=urlencode(kept)))
+        kwargs.update(_REDIS_TLS_ENFORCED_OPTIONS)
+    return redis_module.Redis.from_url(url, **kwargs)
 
 
 def _normalize_ric(value: Any) -> Tuple[Optional[int], str]:
@@ -397,7 +417,7 @@ class DedupeCache:
         url = _get_str("REDIS_URL", cfg, "redis_url", None)
         if url:
             logging.debug("Redis dedupe using url=%s", _redact_url(url))
-            self._redis = redis.Redis.from_url(url)
+            self._redis = _redis_from_url(redis, url)
             return
 
         host = _get_str("REDIS_HOST", cfg, "redis_host", "localhost")
@@ -408,7 +428,7 @@ class DedupeCache:
         logging.debug("Redis dedupe using host=%s port=%s db=%s tls=%s", host, port, db, tls)
         scheme = "rediss" if tls else "redis"
         url = f"{scheme}://{host}:{port}/{db}"
-        self._redis = redis.Redis.from_url(url, password=password)
+        self._redis = _redis_from_url(redis, url, password=password)
 
     def _redis_seen(self, key: str) -> Optional[bool]:
         if self._redis is None:
