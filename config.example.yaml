@@ -50,6 +50,8 @@ dedupe:
   redis_port: 6379
   redis_db: 0
   redis_password: ""
+  # With TLS (redis_tls or a rediss:// URL) the server certificate must be
+  # trusted and issued for the configured host name.
   redis_tls: false
 
 pager_phonebook_api:
