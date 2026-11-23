@@ -13,6 +13,8 @@ ExecStart=/opt/meshsag/.venv/bin/python /opt/meshsag/pocsag_forwarder.py
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/log/meshsag.log
 
 [Install]
 WantedBy=multi-user.target

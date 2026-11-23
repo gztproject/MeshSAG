@@ -151,9 +151,9 @@ Recommended for servers. This repo includes a unit file at `systemd/meshsag.serv
 
 1. Create a service user:
    - `sudo useradd --system --no-create-home --shell /usr/sbin/nologin meshsag`
-2. Install the repo and deps:
+2. Install the repo and deps (the installed tree must be owned by root and writable by no other account, since the service runs it and root installs its requirements):
    - `sudo mkdir -p /opt/meshsag`
-   - `sudo rsync -a ./ /opt/meshsag/`
+   - `sudo rsync -a --safe-links --exclude=/.venv --chown=root:root --chmod=go-w,ug-s ./ /opt/meshsag/`
    - `sudo python3 -m venv /opt/meshsag/.venv`
    - `sudo /opt/meshsag/.venv/bin/pip install -r /opt/meshsag/requirements.txt`
 3. Place config:
@@ -174,10 +174,9 @@ Recommended for servers. This repo includes a unit file at `systemd/meshsag.serv
 ## Updates (manual `git pull`)
 Assuming the repo is installed at `/opt/meshsag` and running as the `meshsag` service.
 
-1. Pull latest:
-   - `cd /opt/meshsag`
-   - `sudo -u meshsag git pull --ff-only`
-2. Update Python deps (safe to run every time):
+1. Pull latest (as root, so the tree stays root-owned):
+   - `sudo git -c core.hooksPath=/dev/null -c core.fsmonitor=false -C /opt/meshsag pull --ff-only`
+2. Update Python deps (only while `/opt/meshsag` is root-owned and writable by no other account; `scripts/update.sh` checks this for you):
    - `sudo /opt/meshsag/.venv/bin/pip install -r /opt/meshsag/requirements.txt`
 3. Restart the service:
    - `sudo systemctl restart meshsag`

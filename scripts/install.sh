@@ -6,6 +6,8 @@ if [[ "$(id -u)" -ne 0 ]]; then
   exit 1
 fi
 
+umask 022
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
@@ -18,6 +20,39 @@ LOG_FILE="${LOG_FILE:-/var/log/meshsag.log}"
 log() {
   echo "[meshsag-install] $*"
 }
+
+die() {
+  echo "[meshsag-install] ERROR: $*" >&2
+  exit 1
+}
+
+# Prints the first path under $1 that an account other than root could
+# modify, or that is setuid/setgid.
+find_unsafe() {
+  find "$1" \( ! -user root -o \( ! -type l -perm /6022 \) \) -print -quit
+}
+
+# Fails unless every directory above $1 is owned by root and is either not
+# writable by group/other or sticky, so no other account can swap $1.
+check_parent_dirs() {
+  local dir uid mode
+  dir="$(dirname -- "$1")"
+  while :; do
+    if [[ -e "${dir}" ]]; then
+      read -r uid mode < <(stat -c '%u %a' -- "${dir}")
+      if [[ "${uid}" -ne 0 ]]; then
+        die "${dir} is not owned by root."
+      fi
+      if (( (8#${mode} & 8#022) && !(8#${mode} & 8#1000) )); then
+        die "${dir} is writable by accounts other than root."
+      fi
+    fi
+    [[ "${dir}" == "/" ]] && break
+    dir="$(dirname -- "${dir}")"
+  done
+}
+
+INSTALL_DIR="$(realpath -m -- "${INSTALL_DIR}")"
 
 log "Starting install."
 log "INSTALL_DIR=${INSTALL_DIR}"
@@ -34,8 +69,20 @@ else
 fi
 
 log "Syncing repo to ${INSTALL_DIR}."
+check_parent_dirs "${INSTALL_DIR}"
 mkdir -p "${INSTALL_DIR}"
-rsync -a "${ROOT_DIR}/" "${INSTALL_DIR}/"
+unsafe="$(find_unsafe "${INSTALL_DIR}")"
+if [[ -n "${unsafe}" ]]; then
+  die "${unsafe} can be modified by an account other than root. Move ${INSTALL_DIR} aside and re-run the install."
+fi
+# The service runs this tree and root installs its requirements, so it must
+# be owned by root and writable by no one else, whoever owns the checkout.
+rsync -a --safe-links --exclude=/.venv --chown=root:root --chmod=go-w,ug-s \
+  "${ROOT_DIR}/" "${INSTALL_DIR}/"
+unsafe="$(find_unsafe "${INSTALL_DIR}")"
+if [[ -n "${unsafe}" ]]; then
+  die "${unsafe} can be modified by an account other than root after sync."
+fi
 
 log "Setting up virtualenv."
 python3 -m venv "${INSTALL_DIR}/.venv"
@@ -68,9 +115,9 @@ touch "${LOG_FILE}"
 chown "${SERVICE_USER}:${SERVICE_USER}" "${LOG_FILE}"
 chmod 640 "${LOG_FILE}"
 
-if [[ -f "${ROOT_DIR}/logrotate/meshsag" ]]; then
+if [[ -f "${INSTALL_DIR}/logrotate/meshsag" ]]; then
   log "Installing logrotate config."
-  cp "${ROOT_DIR}/logrotate/meshsag" "/etc/logrotate.d/${SERVICE_NAME}"
+  install -m 0644 -o root -g root "${INSTALL_DIR}/logrotate/meshsag" "/etc/logrotate.d/${SERVICE_NAME}"
 fi
 
 log "Writing systemd unit."
@@ -90,6 +137,8 @@ ExecStart=${INSTALL_DIR}/.venv/bin/python ${INSTALL_DIR}/pocsag_forwarder.py
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=${LOG_FILE}
 
 [Install]
 WantedBy=multi-user.target
